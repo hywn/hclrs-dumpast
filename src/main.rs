@@ -67,6 +67,7 @@ fn main_real() -> Result<bool, Error> {
     opts.optflag("", "ungroup-debug-wires", "when showing wire values in debug output, do not group wires by category");
     opts.optflag("", "trace-assignments", "show assignments in the order they are simulated");
     opts.optflag("", "version", "print version number");
+    opts.optflag("", "dump-ast", "dumps program AST");
     let parsed_opts = match opts.parse(&args[1..]) {
         Ok(m) => m,
         Err(f) => {
@@ -101,6 +102,7 @@ fn main_real() -> Result<bool, Error> {
         run_options.set_trace_assignments();
     }
     let check_only = parsed_opts.opt_present("c");
+    let dumpast_only = parsed_opts.opt_present("dump-ast");
     let free_args = parsed_opts.free;
     if free_args.len() < 1 {
         print_usage(&program_name, opts);
@@ -118,6 +120,18 @@ fn main_real() -> Result<bool, Error> {
     if free_args.len() > 3 {
         print_usage(&program_name, opts);
         return Ok(false);
+    }
+    if dumpast_only {
+        return match internal_dump_ast(&file_contents) {
+            Err(e) => {
+                e.format_for_contents(&mut stderr(), &file_contents)?;
+                Ok(false)
+            },
+            Ok(s) => {
+                print!("{:?}", s); // not sure if there is more direct way to print or something
+                Ok(true)
+            }
+        }
     }
     let running_program =
         match parse_y86(&file_contents) {
