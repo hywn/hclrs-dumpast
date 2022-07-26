@@ -1,6 +1,6 @@
 [package]
-name = "hclrs"
-version = "0.2.14"
+name = "salad2"
+version = "0.0.1"
 authors = ["Charles Reiss <cr4bd@virginia.edu>"]
 
 build = "build.rs" # LARLRPOP preprocessing
@@ -12,6 +12,9 @@ strict-wire-widths-binary = []
 require-mux-default = []
 disallow-multiple-mux-default = []
 disallow-unreachable-options = []
+
+[profile.dev]
+incremental = true
 
 [profile.release]
 lto = true
