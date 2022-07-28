@@ -1,0 +1,91 @@
+use ast::{ WireValue, WireWidth, BinOpCode };
+use salad::{ BopCode, Simple, Test, Unmatched, CoolProperty };
+use std::iter::FromIterator;
+use std::collections::HashSet;
+
+grammar;
+
+Repeat<delim, T>: Vec<T> = {
+	<v:(<T> delim)*> <e:T?> => match e {
+		None => v,
+		Some(e) => {
+			let mut v = v;
+			v.push(e);
+			v
+		}
+	}
+};
+
+Semicolons<T>: Vec<T> = Repeat<";", T>;
+Commas<T>: Vec<T> = Repeat<",", T>;
+
+BopCode : BopCode =
+	{ "+"  => BopCode::Add
+	, "-"  => BopCode::Sub
+	, "*"  => BopCode::Mul
+	, "/"  => BopCode::Div
+	, "|"  => BopCode::Or
+	, "^"  => BopCode::Xor
+	, "&"  => BopCode::And
+	, "==" => BopCode::Equal
+	, "!=" => BopCode::NotEqual
+	, "<=" => BopCode::LessEqual
+	, ">=" => BopCode::GreaterEqual
+	, "<"  => BopCode::Less
+	, ">"  => BopCode::Greater
+	, "&&" => BopCode::LogicalAnd
+	, "||" => BopCode::LogicalOr
+	, "<<" => BopCode::LeftShift
+	, ">>" => BopCode::RightShift
+	, ".." => BopCode::Concat
+	}
+
+Num : u128 =
+	{ <s:r"0b[01_]+"> => s[2..].chars().filter_map(|x| x.to_digit(2)) // 0b should always be 2 bytes
+		.rev().enumerate().map(|(i, x)| (x as u128) << i)
+		.fold(0, |a, b| a + b)
+	, <s:r"[0-9]+"> => s.parse().unwrap()
+	}
+
+VarName : String = <s : r"[A-Za-z_][A-Za-z_0-9]*"> => s.to_string();
+
+TestName : String =
+	{ <name : VarName> => name
+	, <s : r#""[^\{\}]+"#> => s[1..].trim().to_string() // " should be 1 byte
+	}
+
+CoolProperty : CoolProperty =
+	{ "oneof" "(" <ls : Commas<Num>> ")" => CoolProperty::OneOf(HashSet::from_iter(ls))
+	, "neq" "(" <s : Simple> ")" => CoolProperty::Neq(Box::new(s))
+	}
+
+pub Test : Test =
+	{ <name : TestName> "{" <ts : Semicolons<Test>> "}" => Test::Test(name, ts)
+	, "Given" <l : Simple> "is" <r : Simple> => Test::Given(Box::new(l), Box::new(r))
+	, "Value" <name : VarName> <ps : Commas<CoolProperty>> => Test::ValueDef(name, ps)
+	, <l : Simple> "<-" <r : Simple> => Test::Condition(Box::new(l), Box::new(r))
+	}
+
+pub Simple : Simple =
+	{ <l : NotBin> <op : BopCode> <r : Simple> => Simple::BinMaths(op, Box::new(l), Box::new(r))
+	, <s : NotBin> => s
+	}
+
+NotBin : Simple =
+	{ <num : Num> => Simple::Literal(WireValue { bits: num, width: WireWidth::Unlimited })
+	, "[" <n:r"[0-9]+"> <x : Simple> "]" =>
+		{ let num : u32 = n.parse().unwrap()
+		; (0..num).fold(x, |x, _| Simple::Aged(Box::new(x)))
+		}
+	, "(" <s : Simple> ")" => s
+	, <name : VarName> => Simple::Name(name)
+	, "???" => Simple::Wildcard
+	, "#" <s : VarName> => Simple::Cool(s)
+	, "$input"  <s : VarName> => Simple::Unmatched(Unmatched::Input(s))
+	, "$output" <s : VarName> => Simple::Unmatched(Unmatched::Output(s))
+	, "$src"    <s : VarName> => Simple::Unmatched(Unmatched::Src(s))
+	, "$dst"    <s : VarName> => Simple::Unmatched(Unmatched::Dst(s))
+	, "@in:"  <s : VarName> => Simple::Unmatched(Unmatched::RegIn(s))
+	, "@out:" <s : VarName> => Simple::Unmatched(Unmatched::RegOut(s))
+	, <x : NotBin> "[" <lo : Num> ".." <hi : Num> "]" => Simple::Slice(Box::new(x), lo as u32, hi as u32)
+	}

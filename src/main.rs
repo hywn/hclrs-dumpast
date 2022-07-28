@@ -1,26 +1,21 @@
+mod salad;
+mod ast;
+mod errors;
+mod lexer;
+mod io;
+
 use std::env;
-use std::process;
+use std::fs;
 use std::path::Path;
 
 #[macro_use]
 extern crate log;
+
 #[macro_use]
 extern crate lalrpop_util;
 
+lalrpop_mod!(pub saladparser);
 lalrpop_mod!(pub parser);
-use parser::StatementsParser;
-
-mod lexer;
-use lexer::Lexer;
-
-mod ast;
-use ast::Statement;
-
-mod io;
-use io::FileContents;
-
-mod errors;
-use errors::Error;
 
 pub const Y86_PREAMBLE: &'static str = "
 const STAT_BUB = 0b000, STAT_AOK = 0b001, STAT_HLT = 0b010;  # expected behavior
@@ -44,43 +39,34 @@ const TRUE = 1;
 const FALSE = 0;
 ";
 
+pub fn get_ast(filename: &str) -> Vec<ast::Statement> {
+	let fc = io::FileContents::new_from_file_with_preamble(Y86_PREAMBLE, Path::new(filename)).unwrap();
+	let mut errors = Vec::new();
+	let lexer = lexer::Lexer::new_for_file(&fc);
+
+	let got = parser::StatementsParser::new().parse(&mut errors, lexer).expect("programfile did not parse");
+
+	if errors.len() > 0 {
+		panic!("hcl file produced errors. please check file before testing")
+	} else {
+		got
+	}
+}
+
+pub fn get_test(filename: &str) -> salad::Test {
+	let text = fs::read_to_string(filename).unwrap();
+	saladparser::TestParser::new().parse(text.as_str()).expect("testfile did not parse")
+}
+
 fn main() {
 	let args: Vec<String> = env::args().collect();
 
 	if args.len() < 3 {
-		eprintln!("usage: ./tool <test file> <program file>");
-		process::abort();
+		panic!("usage: ./tool <test file> <program file>");
 	}
 
-	match FileContents::new_from_file_with_preamble(Y86_PREAMBLE, Path::new(&args[2])) {
-		Ok(fc) => {
-			match internal_dump_ast(&fc) {
-				Ok(stuff) => println!("{:?}", stuff),
-				Err(_) => {
-					eprintln!("program file did not parse");
-					process::abort();
-				}
-			}
-		}
-		Err(x) => println!("{:?}", x)
-	}
+	let test = get_test(args[1].as_str());
+	let ast = get_ast(args[2].as_str());
 
-}
-
-pub fn internal_dump_ast(contents: &FileContents) -> Result<Vec<Statement>, Error> {
-	let mut errors = Vec::new();
-	let lexer = Lexer::new_for_file(contents);
-	let statements;
-	match StatementsParser::new().parse(&mut errors, lexer) {
-		Ok(s) => statements = s,
-		Err(e) => {
-			let mut errors: Vec<Error> = errors.into_iter().map(|err_rec| Error::from(err_rec)).collect();
-			errors.push(Error::from(e));
-			return Err(Error::MultipleErrors(errors));
-		},
-	}
-	if errors.len() > 0 {
-		return Err(Error::MultipleErrors(errors.into_iter().map(|err_rec| Error::from(err_rec)).collect()));
-	}
-	Ok(statements)
+	salad::test(test, ast);
 }
