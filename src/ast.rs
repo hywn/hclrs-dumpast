@@ -23,7 +23,7 @@ const DISALLOW_MULTIPLE_MUX_DEFAULT: bool = cfg!(feature="disallow-multiple-mux-
 const DISALLOW_UNREACHABLE_OPTIONS: bool = cfg!(feature="disallow-unreachable-options");
 
 
-#[derive(Clone,Copy,Debug,Eq,PartialEq,PartialOrd,Ord)]
+#[derive(Clone,Copy,Debug,Eq,PartialEq,PartialOrd,Ord,Hash)]
 pub enum WireWidth {
     Bits(u8),
     Unlimited,
@@ -112,7 +112,7 @@ impl WireWidth {
     }
 }
 
-#[derive(Clone,Copy,Eq,PartialEq,Debug)]
+#[derive(Clone,Copy,Eq,PartialEq,Debug,Hash)]
 pub struct WireValue {
     pub bits: u128,
     pub width: WireWidth
