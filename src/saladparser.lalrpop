@@ -1,4 +1,4 @@
-use ast::{ WireValue, WireWidth, BinOpCode };
+use ast::{ WireValue, WireWidth };
 use salad::{ BopCode, Simple, Test, Unmatched, CoolProperty };
 use std::iter::FromIterator;
 use std::collections::HashSet;
@@ -56,18 +56,18 @@ TestName : String =
 
 CoolProperty : CoolProperty =
 	{ "oneof" "(" <ls : Commas<Num>> ")" => CoolProperty::OneOf(HashSet::from_iter(ls))
-	, "neq" "(" <s : Simple> ")" => CoolProperty::Neq(Box::new(s))
+	, "neq" "(" <s : Simple> ")" => CoolProperty::Neq(s.rc())
 	}
 
 pub Test : Test =
 	{ <name : TestName> "{" <ts : Semicolons<Test>> "}" => Test::Test(name, ts)
-	, "Given" <l : Simple> "is" <r : Simple> => Test::Given(Box::new(l), Box::new(r))
+	, "Given" <l : Simple> "is" <r : Simple> => Test::Given(l.rc(), r.rc())
 	, "Value" <name : VarName> <ps : Commas<CoolProperty>> => Test::ValueDef(name, ps)
-	, <l : Simple> "<-" <r : Simple> => Test::Condition(Box::new(l), Box::new(r))
+	, <l : Simple> "<-" <r : Simple> => Test::Condition(l.rc(), r.rc())
 	}
 
 pub Simple : Simple =
-	{ <l : NotBin> <op : BopCode> <r : Simple> => Simple::BinMaths(op, Box::new(l), Box::new(r))
+	{ <l : NotBin> <op : BopCode> <r : Simple> => Simple::BinMaths(op, l.rc(), r.rc())
 	, <s : NotBin> => s
 	}
 
@@ -75,7 +75,7 @@ NotBin : Simple =
 	{ <num : Num> => Simple::Literal(WireValue { bits: num, width: WireWidth::Unlimited })
 	, "[" <n:r"[0-9]+"> <x : Simple> "]" =>
 		{ let num : u32 = n.parse().unwrap()
-		; (0..num).fold(x, |x, _| Simple::Aged(Box::new(x)))
+		; (0..num).fold(x, |x, _| Simple::Aged(x.rc()))
 		}
 	, "(" <s : Simple> ")" => s
 	, <name : VarName> => Simple::Name(name)
@@ -87,5 +87,5 @@ NotBin : Simple =
 	, "$dst"    <s : VarName> => Simple::Unmatched(Unmatched::Dst(s))
 	, "@in:"  <s : VarName> => Simple::Unmatched(Unmatched::RegIn(s))
 	, "@out:" <s : VarName> => Simple::Unmatched(Unmatched::RegOut(s))
-	, <x : NotBin> "[" <lo : Num> ".." <hi : Num> "]" => Simple::Slice(Box::new(x), lo as u32, hi as u32)
+	, <x : NotBin> "[" <lo : Num> ".." <hi : Num> "]" => Simple::Slice(x.rc(), lo as u8, hi as u8)
 	}
