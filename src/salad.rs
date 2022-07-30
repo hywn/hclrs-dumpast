@@ -209,11 +209,12 @@ pub enum Test
 	, Condition(Rc<Simple>, Rc<Simple>)
 	}
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum EquivResult
 	{ Equiv        // old "Correct"
-	, Ambiguous    // old "WrongMaybe"
+	, Ambiguous    // old "WrongMaybe" -- essentially "I don't know"
 	, NotEquiv     // old "NotEquiv"
-	, Unsimplified // old "Unknown"
+	, Unsimplified // old "Unknown"    -- essentially Ambiguous but specifically because something didn't simplify
 	}
 
 // I have no clue how this memory layout looks like
@@ -650,6 +651,52 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 	got
 }
 
+pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
+	use self::Simple::*;
+	use self::EquivResult::*;
+	use ast::WireWidth::*;
+
+	macro_rules! abs {
+		($x: expr) => { Some(if $x { Equiv } else { NotEquiv }) }
+	}
+
+	let lr = (&*l, &*r);
+
+	if let (Name(x), Name(y)) = lr {
+		return abs!(x == y)
+	}
+
+	if let (Literal(WireValue{ bits: x, width: wx }), Literal(WireValue{ bits: y, width: wy })) = lr {
+		return if let Some(w) = wx.combine(*wy) {
+			let mask = w.mask();
+			abs!((x & w.mask()) == (y & w.mask()))
+		} else {
+			Some(NotEquiv) // unequal Bits
+		}
+	}
+
+	if let (Slice(x, xlo, xhi), Slice(y, ylo, yhi)) = lr {
+		let got = equiv(Rc::clone(x), Rc::clone(y));
+		return if got == Equiv {
+			abs!(xlo == ylo && xhi == yhi)
+		} else {
+			Some(got)
+		}
+	}
+
+	None
+}
+
+pub fn equiv(l: Rc<Simple>, r: Rc<Simple>) -> EquivResult {
+	if let Some(x) = equiv_uncomm(Rc::clone(&l), Rc::clone(&r)) {
+		return x
+	} else if let Some(x) = equiv_uncomm(r, l) {
+		return x
+	} else {
+		EquivResult::Ambiguous
+	}
+}
+
 pub fn test(test: Test, ss: Vec<ast::Statement>) {
 	let mut assignments = HashMap::<String, &ast::SpannedExpr>::new();
 	let mut     regouts = HashMap::<String, (char, String, &ast::SpannedExpr)>::new();
@@ -724,7 +771,10 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) {
 						.map(|(x, y)| (Rc::clone(x), Rc::clone(y)))
 				);
 				let state = EvalState { givens };
-				println!("-> {}", s_simplify(&program, &state, &mut memo, Lanz{age:0}, l, true));
+				let simpl = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&l), true);
+				let simpr = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&r), true);
+				let eq = equiv(Rc::clone(&simpl), Rc::clone(&simpr));
+				println!("{:?} <--- {} == {} <--- {} == {}", eq, simpl, simpr, l, r);
 			},
 			Some(None) => {
 				memo.drain(); // could probably see if givens was empty
