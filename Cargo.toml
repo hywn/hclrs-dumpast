@@ -30,18 +30,3 @@ version = "0.19.5"
 
 [dependencies.log]
 version = "0.4.3"
-
-[dependencies.env_logger]
-version = "0.8.3"
-
-[dependencies.getopts]
-version = "0.2.18"
-
-[dev-dependencies.regex]
-version = "1"
-
-[dev-dependencies.assert_cmd]
-version = "0.10"
-
-[dev-dependencies.predicates]
-version = "1"
