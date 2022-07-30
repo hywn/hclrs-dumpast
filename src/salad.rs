@@ -489,6 +489,11 @@ fn deage(x: Rc<Simple>) -> Option<Rc<Simple>> {
 	}
 }
 
+fn rawslice(x: u128, lo: u8, hi: u8) -> u128{
+	let mask = (!0) >> (128 - (hi - lo));
+	return x.wrapping_shr(lo as u32) & mask
+}
+
 fn s_simplify(p: &Program, state: &EvalState, simple: Rc<Simple>, er: bool) -> Rc<Simple> { // er: expand regouts
 	use self::Simple::*;
 
@@ -506,6 +511,31 @@ fn s_simplify(p: &Program, state: &EvalState, simple: Rc<Simple>, er: bool) -> R
 	}
 
 	match &*simple {
+		Slice(x, lo, hi) => {
+			match &*f!(Rc::clone(x))
+			{ Name(name) =>
+				// subslice of given slice (very cool code!)
+				if let Some(x) = state.givens.iter().filter_map(|(k, v)| {
+					if let Slice(y, l, h) = &*(*k) {
+						if let Name(n) = &*(*y) {
+							if *n == *name && *l <= *lo && *h >= *hi {
+								return Some(Slice(Rc::clone(v), *lo, *hi).rc())
+							}
+						}
+					}
+					None
+				}).next() { f!(x) } else { simple }
+			// Todo: check bounds more
+			, &Literal(WireValue{ bits, width }) => Literal(WireValue{ bits: rawslice(bits, *lo, *hi), width }).rc()
+			, Slice(x, l, h) =>
+				if (*l + *lo) > *h || (*l + *hi) > *h {
+					panic!("slice of slice out of bounds")
+				} else {
+					Slice(Rc::clone(x), *l + *lo, *l + *hi).rc()
+				}
+			, _ => simple
+			}
+		},
 		OneOfLogic(_, _) => {
 			todo!()
 		},
@@ -554,7 +584,8 @@ fn s_simplify(p: &Program, state: &EvalState, simple: Rc<Simple>, er: bool) -> R
 				, _ => Unknown(self::Unknown::BubbledRegOut(simple, bubble)).rc()
 				}
 			} else {
-				Simple::Error(format!("<not found: {}>", n)).rc() // TODO: complete e.g. default values
+				//Simple::Error(format!("<not found: {}>", n)).rc() // TODO: complete e.g. default values
+				simple
 			};
 
 			got // TODO: squash
