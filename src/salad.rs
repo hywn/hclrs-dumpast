@@ -632,31 +632,35 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) {
 
 	let program = Program { assignments, regouts, widths };
 
-	let mut evalstack = Vec::<self::Test>::new();
+	let mut evalstack = Vec::<Option<self::Test>>::new(); // None represents end-of-test
 	let mut givens_stack = Vec::<HashMap::<Rc<Simple>, Rc<Simple>>>::new();
 
-	evalstack.push(test);
+	evalstack.push(Some(test));
 
 	loop {
 		match evalstack.pop() {
-			Some(Test(_s, ts)) => {
-				evalstack.extend(ts.into_iter().rev());
+			Some(Some(Test(_s, ts))) => {
 				givens_stack.push(HashMap::new());
+				evalstack.push(None);
+				evalstack.extend(ts.into_iter().rev().map(|x| Some(x)));
 			},
-			Some(Given(l, r)) => {
+			Some(Some(Given(l, r))) => {
 				if let Some(x) = givens_stack.last_mut() {
 					x.insert(l, r);
 				} else {
 					panic!("test underflow?")
 				}
 			},
-			Some(Condition(l, r)) => {
+			Some(Some(Condition(l, r))) => {
 				let givens : HashMap<Rc<Simple>, Rc<Simple>> = HashMap::from_iter(
 					givens_stack.iter().flat_map(|x| x.iter())
 						.map(|(x, y)| (Rc::clone(x), Rc::clone(y)))
 				);
 				let state = EvalState { givens };
 				println!("-> {}", s_simplify(&program, &state, l, true));
+			},
+			Some(None) => {
+				givens_stack.pop();
 			},
 			None => break,
 			_ => todo!()
