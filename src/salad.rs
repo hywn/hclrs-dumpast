@@ -377,36 +377,66 @@ struct EvalState
 	//; matches?
 	}
 
+type Memo = HashMap<Rc<Simple>, Rc<Simple>>;
+
+#[derive(Clone, Copy)]
+struct Lanz // thing to generate "full path" of recursed Simples
+	{ age: u32
+	}
+
+impl Lanz {
+	fn age(&self) -> Lanz {
+		Lanz {age: self.age+1}
+	}
+	fn fullpath(&self, x: Rc<Simple>) -> Rc<Simple> {
+		(0..self.age).fold(x, |x, _| Simple::Aged(x).rc())
+	}
+}
+
 trait Simplifiable {
-	fn simplify(&self, _: &Program, _: &EvalState, _: bool) -> Rc<Simple>;
+	fn simplify(&self, _: &Program, _: &EvalState, memo: &mut Memo, lanz: Lanz, _: bool) -> Rc<Simple>;
 }
 
 impl Simplifiable for ast::SpannedExpr {
-	fn simplify(&self, p: &Program, state: &EvalState, b: bool) -> Rc<Simple> {
-		self.expr.simplify(p, state, b)
+	fn simplify(&self, p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, b: bool) -> Rc<Simple> {
+		self.expr.simplify(p, state, memo, lanz, b)
 	}
 }
 
 impl Simplifiable for ast::Expr {
-	fn simplify(&self, p: &Program, state: &EvalState, er: bool) -> Rc<Simple> {
+	fn simplify(&self, p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, er: bool) -> Rc<Simple> {
 		use ast::Expr::*;
 		use self::Simple::*;
 
 		macro_rules! f {
-			($x: expr) => { $x.simplify(p, state, er) }
+			($x: expr) => { $x.simplify(p, state, memo, lanz, er) }
+		}
+		macro_rules! s {
+			($x: expr) => { s_simplify(p, state, memo, lanz, $x, er) }
 		}
 
-		let s = |x| s_simplify(p, state, x, er);
-
-		match self
-		{ Constant(v)                  => Literal(*v).rc()
-		, BinOp(op, x, y)              => s(BinMaths(BopCode::from(*op), f!(x), f!(y)).rc())
-		, UnOp(op, x)                  => s(UnMaths(UopCode::from(*op), f!(x)).rc())
-		, NamedWire(name)              => s(Name(name.to_string()).rc())
-		, BitSelect{ from, low, high } => s(Slice(f!(from), *low, *high).rc())
-		, Concat(x, y)                 => s(BinMaths(BopCode::Concat, f!(x), f!(y)).rc())
-		, InSet(e_x, e_xs) =>
-			{
+		match self {
+			Constant(v) => Literal(*v).rc(),
+			BinOp(op, x, y) => {
+				let xx = f!(x); // need to do this so uses memo once at a time or something
+				let yy = f!(y);
+				s!(BinMaths(BopCode::from(*op), xx, yy).rc())
+			},
+			UnOp(op, x) => {
+				let xx = f!(x);
+				s!(UnMaths(UopCode::from(*op), xx).rc())
+			},
+			NamedWire(name) => s!(Name(name.to_string()).rc()),
+			BitSelect{ from, low, high } => {
+				let xx = f!(from);
+				s!(Slice(xx, *low, *high).rc())
+			},
+			Concat(x, y) => {
+				let xx = f!(x);
+				let yy = f!(y);
+				s!(BinMaths(BopCode::Concat, xx, yy).rc())
+			},
+			InSet(e_x, e_xs) => {
 				// TODO: cool logic
 				let x = f!(e_x);
 				let xs : Vec<Rc<Simple>> = e_xs.iter().map(|x| f!(x)).collect();
@@ -415,9 +445,8 @@ impl Simplifiable for ast::Expr {
 
 				xs.iter().map(|thing| sbin(BopCode::Equal, Rc::clone(&x), Rc::clone(thing)))
 					.fold(no, |a, b| sbin(BopCode::Or, a, b))
-			}
-		, Mux(opts) =>
-			{
+			},
+			Mux(opts) => {
 				// TODO: cool logic
 				for ast::MuxOption{ condition, value } in opts {
 					let cond = f!(condition);
@@ -428,8 +457,8 @@ impl Simplifiable for ast::Expr {
 					}
 				}
 				Simple::Error("mux did not select branch".to_string()).rc()
-			}
-		, ast::Expr::Error => panic!("unexpected Expr::Error")
+			},
+			ast::Expr::Error => panic!("unexpected Expr::Error"),
 		}
 	}
 }
@@ -489,28 +518,50 @@ fn deage(x: Rc<Simple>) -> Option<Rc<Simple>> {
 	}
 }
 
-fn rawslice(x: u128, lo: u8, hi: u8) -> u128{
-	let mask = (!0) >> (128 - (hi - lo));
-	return x.wrapping_shr(lo as u32) & mask
+fn is_aged(x: &Rc<Simple>) -> bool {
+	use self::Simple::*;
+	match &*(*x)
+	{ Aged(_) => true
+	, BinMaths(_, l, r) => is_aged(l) || is_aged(r)
+	, UnMaths(_, x) => is_aged(x)
+	, Slice(x, _, _) => is_aged(x)
+	, _ => false
+	}
 }
 
-fn s_simplify(p: &Program, state: &EvalState, simple: Rc<Simple>, er: bool) -> Rc<Simple> { // er: expand regouts
+fn rawslice(x: u128, lo: u8, hi: u8) -> u128{
+	let mask = (!0) >> (128 - (hi - lo));
+	x.wrapping_shr(lo as u32) & mask
+}
+
+fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simple: Rc<Simple>, er: bool) -> Rc<Simple> { // er: expand regouts
 	use self::Simple::*;
 
 	macro_rules! f {
-		($x: expr) => { s_simplify(p, state, $x, er) }
+		($x: expr) => { s_simplify(p, state, memo, lanz, $x, er) }
 	}
 	macro_rules! simp {
-		($x: expr) => { $x.simplify(p, state, er) }
+		($x: expr) => { $x.simplify(p, state, memo, lanz, er) }
+	}
+	macro_rules! last {
+		($x: expr) => { s_simplify(p, state, memo, lanz, Aged($x).rc(), er) }
+	}
+	macro_rules! lastname {
+		($n: expr) => { last!(Name($n).rc()) }
 	}
 
 	// should re-simplify anything that *could* have expanded.
 
-	if let Some(x) = state.givens.get(&simple) {
+	if let Some(x) = state.givens.get(&simple) { // given
 		return f!(Rc::clone(x))
 	}
+	if let Some(x) = memo.get(&lanz.fullpath(Rc::clone(&simple))) { // memo
+		return Rc::clone(x)
+	}
 
-	match &*simple {
+	let simple2 = Rc::clone(&simple);
+
+	let got = match &*simple {
 		Slice(x, lo, hi) => {
 			match &*f!(Rc::clone(x))
 			{ Name(name) =>
@@ -544,51 +595,32 @@ fn s_simplify(p: &Program, state: &EvalState, simple: Rc<Simple>, er: bool) -> R
 				simp!(e)
 			} else if let Some((c, inname, defval)) = p.regouts.get(n) {
 				if !er {
-					return simple
-				}
+					simple // do not simplify regouts (for matching purposes)
+				} else if !state.givens.iter().any(|(k, v)| is_aged(k) || is_aged(v)) {
+					simp!(defval) // reached edge of age
+				} else {
+					let bubble = lastname!(format!("bubble_{}", c));
+					match *bubble {
+						Literal(WireValue{ bits: 0, ..}) => {
 
-				fn is_aged(x: &Rc<Simple>) -> bool {
-					match &*(*x)
-					{ Aged(_) => true
-					, BinMaths(_, l, r) => is_aged(l) || is_aged(r)
-					, UnMaths(_, x) => is_aged(x)
-					, Slice(x, _, _) => is_aged(x)
-					, _ => false
+							let stall  = lastname!(format!("stall_{}", c));
+
+							match *stall {
+								Literal(WireValue{ bits: 0, ..}) => lastname!(inname.to_string()), // not bubbled or stalled
+								Literal(_) => last!(simple), // stalled
+								_ => Unknown(self::Unknown::StalledRegOut(simple, stall)).rc(),
+							}
+						},
+						Literal(_) => simp!(defval), // bubbled
+						_ => Unknown(self::Unknown::BubbledRegOut(simple, bubble)).rc(),
 					}
-				}
-
-				let should_age = state.givens.iter()
-					.any(|(k, v)| is_aged(k) || is_aged(v));
-
-				if !should_age {
-					println!("{} defaulted to: {}", n, simp!(defval));
-					return simp!(defval)
-				}
-
-				macro_rules! last {
-					($n: expr) => { s_simplify(p, state, Aged(Name($n).rc()).rc(), er) }
-				}
-
-				let bubble = last!(format!("bubble_{}", c));
-				match *bubble
-				{ Literal(WireValue{ bits: 0, ..}) =>
-					{
-						let stall  = last!(format!("stall_{}", c));
-						match *stall
-						{ Literal(WireValue{ bits: 0, ..}) => last!(inname.to_string()) // not bubbled or stalled
-						, Literal(_) => s_simplify(p, state, Aged(simple).rc(), er) // stalled
-						, _ => Unknown(self::Unknown::StalledRegOut(simple, stall)).rc()
-						}
-					}
-				, Literal(_) => simp!(defval) // bubbled
-				, _ => Unknown(self::Unknown::BubbledRegOut(simple, bubble)).rc()
 				}
 			} else {
 				//Simple::Error(format!("<not found: {}>", n)).rc() // TODO: complete e.g. default values
 				simple
 			};
 
-			got // TODO: squash
+			got // TODO: squash(?)
 		},
 		BinMaths(op, x, y) => {
 			let l = f!(Rc::clone(x));
@@ -609,11 +641,13 @@ fn s_simplify(p: &Program, state: &EvalState, simple: Rc<Simple>, er: bool) -> R
 				)
 			);
 			let aged_state = EvalState { givens: aged_givens };
-			let got = s_simplify(p, &aged_state, Rc::clone(x), er);
+			let got = s_simplify(p, &aged_state, memo, lanz.age(), Rc::clone(x), er);
 			ageflat(Aged(got).rc())
 		},
 		_ => simple
-	}
+	};
+	memo.insert(lanz.fullpath(simple2), Rc::clone(&got));
+	got
 }
 
 pub fn test(test: Test, ss: Vec<ast::Statement>) {
@@ -662,6 +696,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) {
 	use self::Test::*;
 
 	let program = Program { assignments, regouts, widths };
+	let mut memo = HashMap::<Rc<Simple>, Rc<Simple>>::new(); // drained whenever givens change
 
 	let mut evalstack = Vec::<Option<self::Test>>::new(); // None represents end-of-test
 	let mut givens_stack = Vec::<HashMap::<Rc<Simple>, Rc<Simple>>>::new();
@@ -676,6 +711,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) {
 				evalstack.extend(ts.into_iter().rev().map(|x| Some(x)));
 			},
 			Some(Some(Given(l, r))) => {
+				memo.drain();
 				if let Some(x) = givens_stack.last_mut() {
 					x.insert(l, r);
 				} else {
@@ -688,9 +724,10 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) {
 						.map(|(x, y)| (Rc::clone(x), Rc::clone(y)))
 				);
 				let state = EvalState { givens };
-				println!("-> {}", s_simplify(&program, &state, l, true));
+				println!("-> {}", s_simplify(&program, &state, &mut memo, Lanz{age:0}, l, true));
 			},
 			Some(None) => {
+				memo.drain(); // could probably see if givens was empty
 				givens_stack.pop();
 			},
 			None => break,
