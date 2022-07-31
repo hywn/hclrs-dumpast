@@ -55,8 +55,8 @@ TestName : String =
 	}
 
 CoolProperty : CoolProperty =
-	{ "oneof" "(" <ls : Commas<Num>> ")" => CoolProperty::OneOf(HashSet::from_iter(ls))
-	, "neq" "(" <s : Simple> ")" => CoolProperty::Neq(s.rc())
+	{ "Oneof" "(" <ls : Commas<Num>> ")" => CoolProperty::OneOf(HashSet::from_iter(ls))
+	, "Neq" "(" <s : Simple> ")" => CoolProperty::Neq(s.rc())
 	}
 
 pub Test : Test =
@@ -73,6 +73,7 @@ pub Simple : Simple =
 
 NotBin : Simple =
 	{ <num : Num> => Simple::Literal(WireValue { bits: num, width: WireWidth::Unlimited })
+	, "0w" <w : Num> ":" <n : Num> => Simple::Literal(WireValue { bits: n, width: WireWidth::Bits(w as u8) })
 	, "[" <n:r"[0-9]+"> <x : Simple> "]" =>
 		{ let num : u32 = n.parse().unwrap()
 		; (0..num).fold(x, |x, _| Simple::Aged(x.rc()))
