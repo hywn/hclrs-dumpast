@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::iter::FromIterator;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use serde_json::json;
 
 /* ╔═════════════════╗
    ║ datatypes stuff ║
@@ -209,7 +210,7 @@ pub enum Test
 	, Condition(Rc<Simple>, Rc<Simple>)
 	}
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum EquivResult
 	{ Equiv        // old "Correct"
 	, Ambiguous    // old "WrongMaybe" -- essentially "I don't know"
@@ -217,9 +218,21 @@ pub enum EquivResult
 	, Unsimplified // old "Unknown"    -- essentially Ambiguous but specifically because something didn't simplify
 	}
 
-// I have no clue how this memory layout looks like
+impl EquivResult {
+	fn ce(self, x: EquivResult) -> bool { // is self >= x in terms of correctness/equivalence?
+		use self::EquivResult::*;
+		match self
+		{ Equiv        => true
+		, Ambiguous    => x != Equiv
+		, NotEquiv     => x == NotEquiv || x == Unsimplified
+		, Unsimplified => x == Unsimplified
+		}
+	}
+}
+
+#[derive(Debug)]
 pub enum TestResult
-	{ Condition { res: EquivResult, got: Simple, expected: Simple }
+	{ Condition { res: EquivResult, gotstr: String, expectedstr: String /*got: Rc<Simple>, expected: Rc<Simple>*/ } // want to show a bunch of simplification info without storing literally everything
 	, Test(String, Vec<TestResult>)
 	}
 
@@ -309,6 +322,43 @@ impl fmt::Display for Simple {
 				, InSet(x) => write!(f, "Unknown inset because {}", x)
 				}
 			}
+	}
+}
+
+impl fmt::Display for EquivResult {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		fmt::Debug::fmt(self, f)
+	}
+}
+
+impl TestResult {
+	pub fn to_json(&self) -> serde_json::Value {
+		match &self {
+			TestResult::Test(name, rs) => json!({
+				"name": name,
+				"res": match rs.iter().filter_map(|x| if let TestResult::Condition{ res, .. } = x { Some(res) } else { None }).reduce(|a, b| if a.ce(*b) { a } else { b })
+					{ Some(x) => x.to_string()
+					, None => "Empty".to_string()
+					},
+				"conditions": rs.iter().filter_map(|x|
+					if let TestResult::Condition{ .. } = x {
+						Some(x.to_json())
+					} else {
+						None
+					}).collect::<Vec<serde_json::Value>>(),
+				"sub": rs.iter().filter_map(|x|
+					if let TestResult::Test(_, _) = x {
+						Some(x.to_json())
+					} else {
+						None
+					}).collect::<Vec<serde_json::Value>>(),
+			}),
+			TestResult::Condition{res, gotstr, expectedstr} => json!({
+				"res": res.to_string(),
+				"got": gotstr,
+				"expected": expectedstr,
+			}),
+		}
 	}
 }
 
@@ -697,7 +747,20 @@ pub fn equiv(l: Rc<Simple>, r: Rc<Simple>) -> EquivResult {
 	}
 }
 
-pub fn test(test: Test, ss: Vec<ast::Statement>) {
+fn prune<T: DoubleEndedIterator>(xs: T) -> Vec<T::Item> where T::Item: Eq {
+	let mut res = Vec::<T::Item>::new();
+	for x in xs {
+		match res.last()
+		{ Some(last) => if *last != x
+			{ res.push(x);
+			}
+		, None => { res.push(x); }
+		}
+	}
+	res
+}
+
+pub fn test(test: Test, ss: Vec<ast::Statement>) -> TestResult {
 	let mut assignments = HashMap::<String, &ast::SpannedExpr>::new();
 	let mut     regouts = HashMap::<String, (char, String, &ast::SpannedExpr)>::new();
 	let mut      widths = HashMap::<String, WireWidth>::new();
@@ -747,13 +810,16 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) {
 
 	let mut evalstack = Vec::<Option<self::Test>>::new(); // None represents end-of-test
 	let mut givens_stack = Vec::<HashMap::<Rc<Simple>, Rc<Simple>>>::new();
+	let mut result_stack = Vec::<TestResult>::new();
 
 	evalstack.push(Some(test));
+	result_stack.push(TestResult::Test("root".to_string(), Vec::new()));
 
 	loop {
 		match evalstack.pop() {
-			Some(Some(Test(_s, ts))) => {
+			Some(Some(Test(name, ts))) => { // new test
 				givens_stack.push(HashMap::new());
+				result_stack.push(TestResult::Test(name, Vec::new()));
 				evalstack.push(None);
 				evalstack.extend(ts.into_iter().rev().map(|x| Some(x)));
 			},
@@ -773,15 +839,34 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) {
 				let state = EvalState { givens };
 				let simpl = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&l), true);
 				let simpr = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&r), true);
-				let eq = equiv(Rc::clone(&simpl), Rc::clone(&simpr));
-				println!("{:?} <--- {} == {} <--- {} == {}", eq, simpl, simpr, l, r);
+				let res = equiv(Rc::clone(&simpl), Rc::clone(&simpr));
+				if let TestResult::Test(_, rs) = result_stack.last_mut().expect("test underflow?") {
+					rs.push(TestResult::Condition // 🙂
+						{ res
+						, gotstr: prune(vec![l, simpl].iter()).iter().map(|x| x.to_string()). reduce(|x, y| format!("{} -> {}", x, y)).unwrap()
+						, expectedstr: prune(vec![r, simpr].iter()).iter().map(|x| x.to_string()). reduce(|x, y| format!("{} -> {}", x, y)).unwrap()
+						});
+				} else {
+					panic!("only Tests should have gone on the result_stack");
+				}
 			},
 			Some(None) => {
 				memo.drain(); // could probably see if givens was empty
 				givens_stack.pop();
+				let res = result_stack.pop().expect("stack underflow?");
+				if let Some(TestResult::Test(_, rs)) = result_stack.last_mut() {
+					rs.push(res)
+				} else {
+					panic!("no parent for popped child test")
+				}
 			},
 			None => break,
-			_ => todo!()
+			_ => todo!(),
 		}
+	}
+	if let Some(TestResult::Test(_, mut rs)) = result_stack.pop() {
+		rs.pop().expect("no top-level test")
+	} else {
+		panic!("program stack logic problems")
 	}
 }

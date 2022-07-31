@@ -8,6 +8,8 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
+extern crate serde_json;
+
 #[macro_use]
 extern crate log;
 
@@ -68,5 +70,6 @@ fn main() {
 	let test = get_test(args[1].as_str());
 	let ast = get_ast(args[2].as_str());
 
-	salad::test(test, ast);
+	let got = salad::test(test, ast);
+	println!("{}", got.to_json().to_string());
 }

@@ -30,3 +30,6 @@ version = "0.19.5"
 
 [dependencies.log]
 version = "0.4.3"
+
+[dependencies.serde_json]
+version = "1.0"
