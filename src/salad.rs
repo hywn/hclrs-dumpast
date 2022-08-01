@@ -156,14 +156,14 @@ impl From<ast::UnOpCode> for UopCode {
 	}
 }
 
-#[derive(Debug, Eq, PartialEq, Hash)]
+#[derive(Debug, Eq, PartialEq, Hash, Clone)]
 pub enum Unmatched
 	{ RegIn(String)  // e.g. @myreg[in]  -> String=myreg
 	, RegOut(String) // e.g. @myreg[out] -> String=myreg
 	, Input(String)  // e.g. $inputX     -> String=X
 	, Output(String) // e.g. $outputX    -> String=X
-	, Src(String)    // e.g. $srcX       -> String=X
 	, Dst(String)    // e.g. $dstX       -> String=X
+	, Src(String)    // e.g. $srcX       -> String=X
 	}
 
 #[derive(Debug, Eq, PartialEq, Hash)]
@@ -202,12 +202,20 @@ pub enum CoolProperty
 	, Neq(Rc<Simple>)
 	}
 
+#[derive(Debug, Clone)]
+pub enum MatchType
+	{ Regread(String, String)
+	, Regwrite(String, String)
+	, Any(Rc<Simple>, Rc<Simple>)
+	}
+
 #[derive(Debug)]
 pub enum Test
 	{ Test(String, Vec<Test>)
 	, ValueDef(String, Vec<CoolProperty>)
 	, Given(Rc<Simple>, Rc<Simple>)
 	, Condition(Rc<Simple>, Rc<Simple>)
+	, Match(MatchType)
 	}
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -233,7 +241,7 @@ impl EquivResult {
 #[derive(Debug)]
 pub enum TestResult
 	{ Condition { res: EquivResult, gotstr: String, expectedstr: String /*got: Rc<Simple>, expected: Rc<Simple>*/ } // want to show a bunch of simplification info without storing literally everything
-	, Test(String, Vec<TestResult>)
+	, Test(String, Vec<Rc<TestResult>>)
 	}
 
 /* ╔════════════════════╗
@@ -286,10 +294,23 @@ fn disp_aged(n: u32, x: &Simple) -> (u32, &Simple) {
 	}
 }
 
+impl fmt::Display for Unmatched {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		use self::Unmatched::*;
+		match self
+		{ RegIn(s)  => write!(f, "regin:{}", s)
+		, RegOut(s) => write!(f, "regout:{}", s)
+		, Input(s)  => write!(f, "$input{}", s)
+		, Output(s) => write!(f, "$output{}", s)
+		, Src(s)    => write!(f, "$src{}", s)
+		, Dst(s)    => write!(f, "$dst{}", s)
+		}
+	}
+}
+
 impl fmt::Display for Simple {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		use self::Simple::*;
-		use self::Unmatched::*;
 		use self::Unknown::*;
 		match self
 			{ Literal(WireValue{bits, width}) => match width
@@ -300,14 +321,7 @@ impl fmt::Display for Simple {
 			, Wildcard => write!(f, "???")
 			, OneOfLogic(_, _) => todo!()
 			, Name(s) => write!(f, "{}", s)
-			, Unmatched(x) => match x
-				{ RegIn(s)  => write!(f, "regin:{}", s)
-				, RegOut(s) => write!(f, "regout:{}", s)
-				, Input(s)  => write!(f, "$input{}", s)
-				, Output(s) => write!(f, "$output{}", s)
-				, Src(s)    => write!(f, "$src{}", s)
-				, Dst(s)    => write!(f, "$dst{}", s)
-				}
+			, Unmatched(x) => write!(f, "{}", x)
 			, Error(s) => write!(f, "{}", s)
 			, BinMaths(op, l, r) => write!(f, "<{} {} {}>", l, op, r)
 			, UnMaths(op, x) => write!(f, "{}({})", op, x)
@@ -336,18 +350,18 @@ impl TestResult {
 		match &self {
 			TestResult::Test(name, rs) => json!({
 				"name": name,
-				"res": match rs.iter().filter_map(|x| if let TestResult::Condition{ res, .. } = x { Some(res) } else { None }).reduce(|a, b| if a.ce(*b) { a } else { b })
+				"res": match rs.iter().filter_map(|x| if let TestResult::Condition{ res, .. } = *(*x) { Some(res) } else { None }).reduce(|a, b| if a.ce(b) { a } else { b })
 					{ Some(x) => x.to_string()
 					, None => "Empty".to_string()
 					},
 				"conditions": rs.iter().filter_map(|x|
-					if let TestResult::Condition{ .. } = x {
+					if let TestResult::Condition{ .. } = *(*x) {
 						Some(x.to_json())
 					} else {
 						None
 					}).collect::<Vec<serde_json::Value>>(),
-				"sub": rs.iter().filter_map(|x|
-					if let TestResult::Test(_, _) = x {
+					"sub": rs.iter().filter_map(|x|
+						if let TestResult::Test(_, _) = *(*x) {
 						Some(x.to_json())
 					} else {
 						None
@@ -704,7 +718,6 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
 	use self::Simple::*;
 	use self::EquivResult::*;
-	use ast::WireWidth::*;
 
 	macro_rules! abs {
 		($x: expr) => { Some(if $x { Equiv } else { NotEquiv }) }
@@ -718,7 +731,6 @@ pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
 
 	if let (Literal(WireValue{ bits: x, width: wx }), Literal(WireValue{ bits: y, width: wy })) = lr {
 		return if let Some(w) = wx.combine(*wy) {
-			let mask = w.mask();
 			abs!((x & w.mask()) == (y & w.mask()))
 		} else {
 			Some(NotEquiv) // unequal Bits
@@ -760,7 +772,27 @@ fn prune<T: DoubleEndedIterator>(xs: T) -> Vec<T::Item> where T::Item: Eq {
 	res
 }
 
-pub fn test(test: Test, ss: Vec<ast::Statement>) -> TestResult {
+pub fn match_replace(map: &HashMap<Unmatched, Rc<Simple>>, x: Rc<Simple>) -> Rc<Simple> {
+	use self::Simple::*;
+
+	macro_rules! f {
+		($x: expr) => { match_replace(map, $x) }
+	}
+
+	match &*x
+	{ Unmatched(u) => match map.get(&u)
+		{ Some(v) => Rc::clone(v)
+		, None => panic!("Could not find in scope: {}", u)
+		}
+	, BinMaths(op, x, y) => BinMaths(*op, f!(Rc::clone(x)), f!(Rc::clone(y))).rc()
+	, UnMaths(op, x) => UnMaths(*op, f!(Rc::clone(x))).rc()
+	, Slice(x, lo, hi) => Slice(f!(Rc::clone(x)), *lo, *hi).rc()
+	, Aged(x) => Aged(f!(Rc::clone(x))).rc()
+	, _ => x
+	}
+}
+
+pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 	let mut assignments = HashMap::<String, &ast::SpannedExpr>::new();
 	let mut     regouts = HashMap::<String, (char, String, &ast::SpannedExpr)>::new();
 	let mut      widths = HashMap::<String, WireWidth>::new();
@@ -803,70 +835,201 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> TestResult {
 		}
 	}
 
-	use self::Test::*;
+	use self::TestEval::*;
 
 	let program = Program { assignments, regouts, widths };
-	let mut memo = HashMap::<Rc<Simple>, Rc<Simple>>::new(); // drained whenever givens change
+	let mut evals = Vec::<TestEval>::new();
+	fill_eval(test, &mut evals);
+	// like a stack, but a tree
+	let mut e = EvalTree{name: "root".to_string(), givens: Vec::new(), matches: Vec::new(), bs: Vec::new(), results: Vec::new() };
 
-	let mut evalstack = Vec::<Option<self::Test>>::new(); // None represents end-of-test
-	let mut givens_stack = Vec::<HashMap::<Rc<Simple>, Rc<Simple>>>::new();
-	let mut result_stack = Vec::<TestResult>::new();
-
-	evalstack.push(Some(test));
-	result_stack.push(TestResult::Test("root".to_string(), Vec::new()));
-
-	loop {
-		match evalstack.pop() {
-			Some(Some(Test(name, ts))) => { // new test
-				givens_stack.push(HashMap::new());
-				result_stack.push(TestResult::Test(name, Vec::new()));
-				evalstack.push(None);
-				evalstack.extend(ts.into_iter().rev().map(|x| Some(x)));
+	for eval in evals {
+		match eval {
+			Start(name) => {
+				// push new env onto every old env
+				e.push(&|| EvalTree{name: name.to_string(), givens: Vec::new(), matches: Vec::new(), bs: Vec::new(), results: Vec::new() })
 			},
-			Some(Some(Given(l, r))) => {
-				memo.drain();
-				if let Some(x) = givens_stack.last_mut() {
-					x.insert(l, r);
-				} else {
-					panic!("test underflow?")
-				}
+			End => {
+				// pop all current envs
+				let x = e
+					.pop().expect("test underflow")
+					.into_iter().flatten()
+					.next().expect("tree was over-pruned, probably"); // all should be correct (pruning done after condition).
+				let ok = Rc::new(TestResult::Test(x.name, x.results));
+				e.transf1(&|x| x.results.push(Rc::clone(&ok)));
 			},
-			Some(Some(Condition(l, r))) => {
-				let givens : HashMap<Rc<Simple>, Rc<Simple>> = HashMap::from_iter(
-					givens_stack.iter().flat_map(|x| x.iter())
-						.map(|(x, y)| (Rc::clone(x), Rc::clone(y)))
-				);
-				let state = EvalState { givens };
-				let simpl = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&l), true);
-				let simpr = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&r), true);
-				let res = equiv(Rc::clone(&simpl), Rc::clone(&simpr));
-				if let TestResult::Test(_, rs) = result_stack.last_mut().expect("test underflow?") {
-					rs.push(TestResult::Condition // 🙂
+			Given(l, r) => {
+				// add given to each current env
+				e.transf1(&|x| x.givens.push((Rc::clone(&l), Rc::clone(&r))));
+			},
+			Condition(a, b) => {
+				// add condition to each current env
+				e.transf1_accum(&|x, gs, ms| {
+					// givens can vary across threads (because of matching) so cannot have global memo.
+					// is too much pain to add to TestEval so will just use one-time memo for each equiv
+					// probably fast enough for all purposes
+					let mut memo = HashMap::<Rc<Simple>, Rc<Simple>>::new();
+					let matchmap = HashMap::<Unmatched, Rc<Simple>>::from_iter(ms);
+					let state = EvalState { givens: HashMap::from_iter(gs) };
+					let l = Rc::clone(&a);
+					let r = Rc::clone(&b);
+					let ll = match_replace(&matchmap, Rc::clone(&l));
+					let rr = match_replace(&matchmap, Rc::clone(&r));
+					let simpl = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&ll), true);
+					let simpr = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&rr), true);
+					let res = equiv(Rc::clone(&simpl), Rc::clone(&simpr));
+
+					let got = TestResult::Condition // 🙂
 						{ res
-						, gotstr: prune(vec![l, simpl].iter()).iter().map(|x| x.to_string()). reduce(|x, y| format!("{} -> {}", x, y)).unwrap()
-						, expectedstr: prune(vec![r, simpr].iter()).iter().map(|x| x.to_string()). reduce(|x, y| format!("{} -> {}", x, y)).unwrap()
-						});
-				} else {
-					panic!("only Tests should have gone on the result_stack");
-				}
+						, gotstr: prune(vec![Rc::clone(&l), Rc::clone(&ll), simpl].iter()).iter().map(|x| x.to_string()). reduce(|x, y| format!("{} -> {}", x, y)).unwrap()
+						, expectedstr: prune(vec![l, ll, r, rr, simpr].iter()).iter().map(|x| x.to_string()). reduce(|x, y| format!("{} -> {}", x, y)).unwrap()
+						};
+
+					x.results.push(Rc::new(got))
+				}, &vec!(), &vec!())
+				// TODO: prune failed envs
 			},
-			Some(None) => {
-				memo.drain(); // could probably see if givens was empty
-				givens_stack.pop();
-				let res = result_stack.pop().expect("stack underflow?");
-				if let Some(TestResult::Test(_, rs)) = result_stack.last_mut() {
-					rs.push(res)
-				} else {
-					panic!("no parent for popped child test")
+			Match(m) => { // TODO: clearly define what happens when rematching something?
+				use self::Unmatched::*;
+				macro_rules! ab {
+					($sd: expr, $oi: expr, $a: expr, $b: expr, $sda: expr, $sdb: expr, $oia: expr, $oib: expr) => ({
+						let sda = Simple::Name($sda.to_string()).rc();
+						let sdb = Simple::Name($sdb.to_string()).rc();
+						let oia = Simple::Name($oia.to_string()).rc();
+						let oib = Simple::Name($oib.to_string()).rc();
+						vec!(
+							vec!( ($sd($a), Rc::clone(&sda)), ($sd($b), Rc::clone(&sdb)), ($oi($a), Rc::clone(&oia)), ($oi($b), Rc::clone(&oib)) ),
+							vec!( ($sd($a), sdb), ($sd($b), sda), ($oi($a), oib), ($oi($b), oia) ),
+						)
+					})
 				}
+				// split current (local) env on the different paths
+				e.transf2_accum(&|x, _gs, _ms|{
+					let mss : Vec<Vec<(Unmatched, Rc<Simple>)>> = match &m {
+						MatchType::Regread(a, b) => ab!(Src, Output, a.clone(), b.clone(), "reg_srcA", "reg_srcB", "reg_outputA", "reg_outputB"),
+						MatchType::Regwrite(a, b) => ab!(Dst, Input, a.clone(), b.clone(), "reg_dstE", "reg_dstM", "reg_inputE", "reg_inputM"),
+						MatchType::Any(_, _) => todo!(), // ??? what happens when 0 match?
+					};
+					x.bs = x.bs.iter().flat_map(|b|
+						mss.iter().map(move |ms| EvalTree
+							{ name: b.name.to_string()
+							, givens: b.givens.clone()
+							, matches: b.matches.clone().into_iter().chain(ms.clone().into_iter()).collect()
+							, bs: Vec::new() // b.bs *should* be empty..
+							, results: b.results.clone()
+							}
+						)
+					).collect()
+				}, &vec!(), &vec!())
 			},
-			None => break,
-			_ => todo!(),
 		}
 	}
-	if let Some(TestResult::Test(_, mut rs)) = result_stack.pop() {
-		rs.pop().expect("no top-level test")
-	} else {
-		panic!("program stack logic problems")
+
+	e.results.pop().expect("program logic error")
+}
+
+type AcGivens = Vec<(Rc<Simple>, Rc<Simple>)>;
+type AcMatches = Vec<(Unmatched, Rc<Simple>)>;
+
+// something like tree used as stack?
+#[derive(Debug)]
+struct EvalTree
+	{ name: String
+	, givens: Vec<(Rc<Simple>, Rc<Simple>)>
+	, matches: Vec<(Unmatched, Rc<Simple>)>
+	, bs: Vec<EvalTree> // branches
+	, results: Vec<Rc<TestResult>>
+	}
+
+impl EvalTree {
+	fn pop(&mut self) -> Option<Vec<Vec<EvalTree>>> { // removes level
+		self.poplevel().map(|refs| refs.into_iter().map(|r| std::mem::replace(&mut r.bs, Vec::new())).collect())
+	}
+	fn push<F>(&mut self, f: &F) where F: Fn() -> EvalTree { // adds level
+		if self.bs.is_empty() {
+			self.bs.push(f());
+		} else {
+			for x in self.bs.iter_mut() {
+				x.push(f);
+			}
+		}
+	}
+	fn poplevel(&mut self) -> Option<Vec<&mut EvalTree>> { // gets &muts to second-to-last level
+		if self.bs.is_empty() {
+			return None // on last level
+		}
+		if self.bs.iter().all(|x| x.bs.is_empty()) {
+			return Some(vec!(self)) // second level
+		}
+		Some(self.bs.iter_mut().filter_map(|x| x.poplevel()).flatten().collect()) // third+ level
+	}
+	fn transf2_accum<F>(&mut self, f: &F, givens: &AcGivens, matches: &AcMatches) where F: Fn(&mut EvalTree, AcGivens, AcMatches) -> () {
+		let mut givens2 = givens.clone();
+		let mut matches2 = matches.clone();
+
+		givens2.extend(self.givens.clone());
+		matches2.extend(self.matches.clone());
+
+		if self.bs.is_empty() {
+			return
+		} else if self.bs.iter().all(|x| x.bs.is_empty()) {
+			f(self, givens2, matches2) // second level
+		} else {
+			for b in self.bs.iter_mut() {
+				b.transf2_accum(f, &givens2, &matches2)
+			}
+		}
+	}
+	fn transf1_accum<F>(&mut self, f: &F, givens: &AcGivens, matches: &AcMatches) where F: Fn(&mut EvalTree, AcGivens, AcMatches) -> () {
+		let mut givens2 = givens.clone();
+		let mut matches2 = matches.clone();
+
+		givens2.extend(self.givens.clone());
+		matches2.extend(self.matches.clone());
+
+		if self.bs.is_empty() {
+			f(self, givens2, matches2)
+		} else {
+			for b in self.bs.iter_mut() {
+				b.transf1_accum(f, &givens2, &matches2)
+			}
+		}
+	}
+	// apply function over all leaves
+	fn transf1<F>(&mut self, f: &F) where F: Fn(&mut EvalTree) -> () {
+		if self.bs.is_empty() {
+			f(self)
+		} else {
+			for b in self.bs.iter_mut() {
+				b.transf1(f)
+			}
+		}
+	}
+}
+
+// intermediate representation form which is probably totally unnecessary and just clutters code
+#[derive(Debug)]
+enum TestEval
+	{ Start(String)
+	, End
+	, Given(Rc<Simple>, Rc<Simple>)
+	, Condition(Rc<Simple>, Rc<Simple>)
+	, Match(MatchType)
+	}
+
+fn fill_eval(ast: Test, stack: &mut Vec<TestEval>) {
+	use self::TestEval::*;
+	match ast {
+		Test::Test(s, ts) => {
+			stack.push(Start(s));
+			for t in ts {
+				fill_eval(t, stack);
+			}
+			stack.push(End);
+		},
+		Test::ValueDef(_, _) => todo!(),
+		Test::Given(x, y) => stack.push(Given(x, y)),
+		Test::Condition(x, y) => stack.push(Condition(x, y)),
+		Test::Match(m) => stack.push(Match(m)),
 	}
 }

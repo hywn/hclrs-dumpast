@@ -1,5 +1,5 @@
 use ast::{ WireValue, WireWidth };
-use salad::{ BopCode, Simple, Test, Unmatched, CoolProperty };
+use salad::{ BopCode, Simple, Test, Unmatched, CoolProperty, MatchType };
 use std::iter::FromIterator;
 use std::collections::HashSet;
 
@@ -64,6 +64,8 @@ pub Test : Test =
 	, "Given" <l : Simple> "is" <r : Simple> => Test::Given(l.rc(), r.rc())
 	, "Value" <name : VarName> <ps : Commas<CoolProperty>> => Test::ValueDef(name, ps)
 	, <l : Simple> "<-" <r : Simple> => Test::Condition(l.rc(), r.rc())
+	, "Match" "Regread" <a : VarName> <b : VarName> => Test::Match(MatchType::Regread(a, b))
+	, "Match" "Regwrite" <a : VarName> <b : VarName> => Test::Match(MatchType::Regwrite(a, b))
 	}
 
 pub Simple : Simple =
@@ -84,8 +86,8 @@ NotBin : Simple =
 	, "#" <s : VarName> => Simple::Cool(s)
 	, "$input"  <s : VarName> => Simple::Unmatched(Unmatched::Input(s))
 	, "$output" <s : VarName> => Simple::Unmatched(Unmatched::Output(s))
-	, "$src"    <s : VarName> => Simple::Unmatched(Unmatched::Src(s))
 	, "$dst"    <s : VarName> => Simple::Unmatched(Unmatched::Dst(s))
+	, "$src"    <s : VarName> => Simple::Unmatched(Unmatched::Src(s))
 	, "@in:"  <s : VarName> => Simple::Unmatched(Unmatched::RegIn(s))
 	, "@out:" <s : VarName> => Simple::Unmatched(Unmatched::RegOut(s))
 	, <x : NotBin> "[" <lo : Num> ".." <hi : Num> "]" => Simple::Slice(x.rc(), lo as u8, hi as u8)
