@@ -33,3 +33,4 @@ version = "0.4.3"
 
 [dependencies.serde_json]
 version = "1.0"
+features = ["preserve_order"]
