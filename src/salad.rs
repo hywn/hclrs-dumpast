@@ -851,10 +851,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 			},
 			End => {
 				// pop all current envs
-				let x = e
-					.pop().expect("test underflow")
-					.into_iter().flatten()
-					.next().expect("tree was over-pruned, probably"); // all should be correct (pruning done after condition).
+				let x = e.pop().swap_remove(0); // all should be correct (pruning done after condition).
 				let ok = Rc::new(TestResult::Test(x.name, x.results));
 				e.transf1(&|x| x.results.push(Rc::clone(&ok)));
 			},
@@ -863,8 +860,9 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 				e.transf1(&|x| x.givens.push((Rc::clone(&l), Rc::clone(&r))));
 			},
 			Condition(a, b) => {
+				let mut max = EquivResult::NotEquiv; // max correctness of any current env
 				// add condition to each current env
-				e.transf1_accum(&|x, gs, ms| {
+				e.transf1_accum(&mut |x, gs, ms| {
 					// givens can vary across threads (because of matching) so cannot have global memo.
 					// is too much pain to add to TestEval so will just use one-time memo for each equiv
 					// probably fast enough for all purposes
@@ -879,6 +877,8 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 					let simpr = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&rr), true);
 					let res = equiv(Rc::clone(&simpl), Rc::clone(&simpr));
 
+					max = if max.ce(res) { max } else { res };
+
 					let got = TestResult::Condition // 🙂
 						{ res
 						, gotstr: prune(vec![Rc::clone(&l), Rc::clone(&ll), simpl].iter()).iter().map(|x| x.to_string()). reduce(|x, y| format!("{} -> {}", x, y)).unwrap()
@@ -886,8 +886,17 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 						};
 
 					x.results.push(Rc::new(got))
-				}, &vec!(), &vec!())
-				// TODO: prune failed envs
+				}, &vec!(), &vec!());
+				// prune envs
+				e.transf2(&mut |x| {
+					x.bs.retain(|b| {
+						if let TestResult::Condition{ res, .. } = &**b.results.last().expect("unexpected program state") {
+							*res == max
+						} else {
+							panic!("unexpected program state")
+						}
+					})
+				});
 			},
 			Match(m) => { // TODO: clearly define what happens when rematching something?
 				use self::Unmatched::*;
@@ -904,7 +913,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 					})
 				}
 				// split current (local) env on the different paths
-				e.transf2_accum(&|x, _gs, _ms|{
+				e.transf2_accum(&mut |x, _gs, _ms|{
 					let mss : Vec<Vec<(Unmatched, Rc<Simple>)>> = match &m {
 						MatchType::Regread(a, b) => ab!(Src, Output, a.clone(), b.clone(), "reg_srcA", "reg_srcB", "reg_outputA", "reg_outputB"),
 						MatchType::Regwrite(a, b) => ab!(Dst, Input, a.clone(), b.clone(), "reg_dstE", "reg_dstM", "reg_inputE", "reg_inputM"),
@@ -942,8 +951,13 @@ struct EvalTree
 	}
 
 impl EvalTree {
-	fn pop(&mut self) -> Option<Vec<Vec<EvalTree>>> { // removes level
-		self.poplevel().map(|refs| refs.into_iter().map(|r| std::mem::replace(&mut r.bs, Vec::new())).collect())
+	fn pop(&mut self) -> Vec<EvalTree> { // removes level
+		let mut res = Vec::new();
+		self.transf2(&mut |r| {
+				res.extend(std::mem::replace(&mut r.bs, Vec::new()))
+			//refs.into_iter().map(|r| std::mem::replace(&mut r.bs, Vec::new())).collect()
+		});
+		res
 	}
 	fn push<F>(&mut self, f: &F) where F: Fn() -> EvalTree { // adds level
 		if self.bs.is_empty() {
@@ -954,16 +968,18 @@ impl EvalTree {
 			}
 		}
 	}
-	fn poplevel(&mut self) -> Option<Vec<&mut EvalTree>> { // gets &muts to second-to-last level
+	fn transf2<F>(&mut self, f: &mut F) where F: FnMut(&mut EvalTree) -> () {
 		if self.bs.is_empty() {
-			return None // on last level
+			return
+		} else if self.bs.iter().all(|x| x.bs.is_empty()) {
+			f(self) // second level
+		} else {
+			for b in self.bs.iter_mut() {
+				b.transf2(f)
+			}
 		}
-		if self.bs.iter().all(|x| x.bs.is_empty()) {
-			return Some(vec!(self)) // second level
-		}
-		Some(self.bs.iter_mut().filter_map(|x| x.poplevel()).flatten().collect()) // third+ level
 	}
-	fn transf2_accum<F>(&mut self, f: &F, givens: &AcGivens, matches: &AcMatches) where F: Fn(&mut EvalTree, AcGivens, AcMatches) -> () {
+	fn transf2_accum<F>(&mut self, f: &mut F, givens: &AcGivens, matches: &AcMatches) where F: FnMut(&mut EvalTree, AcGivens, AcMatches) -> () {
 		let mut givens2 = givens.clone();
 		let mut matches2 = matches.clone();
 
@@ -980,7 +996,7 @@ impl EvalTree {
 			}
 		}
 	}
-	fn transf1_accum<F>(&mut self, f: &F, givens: &AcGivens, matches: &AcMatches) where F: Fn(&mut EvalTree, AcGivens, AcMatches) -> () {
+	fn transf1_accum<F>(&mut self, f: &mut F, givens: &AcGivens, matches: &AcMatches) where F: FnMut(&mut EvalTree, AcGivens, AcMatches) -> () {
 		let mut givens2 = givens.clone();
 		let mut matches2 = matches.clone();
 
