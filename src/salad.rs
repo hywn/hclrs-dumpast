@@ -350,7 +350,7 @@ impl TestResult {
 		match &self {
 			TestResult::Test(name, rs) => json!({
 				"name": name,
-				"res": match rs.iter().filter_map(|x| if let TestResult::Condition{ res, .. } = *(*x) { Some(res) } else { None }).reduce(|a, b| if a.ce(b) { a } else { b })
+				"res": match rs.iter().filter_map(|x| if let TestResult::Condition{ res, .. } = *(*x) { Some(res) } else { None }).reduce(|a, b| if a.ce(b) { b } else { a })
 					{ Some(x) => x.to_string()
 					, None => "Empty".to_string()
 					},
