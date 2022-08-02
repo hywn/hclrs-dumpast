@@ -192,7 +192,7 @@ pub enum Simple
 	, UnMaths(UopCode, Rc<Simple>)              // "
 	, Slice(Rc<Simple>, u8, u8)                 // "
 	, Aged(Rc<Simple>)                          // "
-	, Unknown(Unknown)                          // "
+	, Unknown(Unknown)                          // " ?
 	}
 
 impl Simple {
@@ -442,6 +442,7 @@ struct Program<'a>
 	,     regouts : HashMap<String, (char, String, &'a ast::SpannedExpr)>
 	,      widths : HashMap<String, WireWidth>
 	,    outchars : HashSet<char>
+	,      regins : HashSet<String>
 	}
 
 struct EvalState
@@ -894,6 +895,19 @@ fn prune<T: DoubleEndedIterator>(xs: T) -> Vec<T::Item> where T::Item: Eq {
 	res
 }
 
+// very incomplete implemention with the cases that I need hard-coded in.
+fn generate_matches(p: &Program, l: Rc<Simple>, r: Rc<Simple>) -> Vec<Vec<(Unreplaced, Rc<Simple>)>> {
+	use self::Simple::*;
+	use self::Unreplaced::*;
+	// for pc
+	if let (Unreplaced(RegOut(name)), Name(x)) = (&*l, &*r) {
+		if let Some((_, inname, _)) = p.regouts.get(x) {
+			return vec![vec![(RegOut(name.to_string()), r), (RegIn(name.to_string()), Name(inname.to_string()).rc())]]
+		}
+	}
+	return vec![vec![]]
+}
+
 // replace matches, values before simplification
 pub fn unreplacement_replacement(map: &HashMap<Unreplaced, Rc<Simple>>, x: Rc<Simple>) -> Rc<Simple> {
 	use self::Simple::*;
@@ -906,7 +920,11 @@ pub fn unreplacement_replacement(map: &HashMap<Unreplaced, Rc<Simple>>, x: Rc<Si
 	match &*x
 	{ Unreplaced(u) => match map.get(&u)
 		{ Some(v) => Rc::clone(v)
-		, None => panic!("Could not find in scope: {}", u)
+		, None => match u
+			{ self::Unreplaced::RegIn(_) => x // lets these pass through because expected to occasionally fail
+			, self::Unreplaced::RegOut(_) => x
+			, _ => panic!("Could not find in scope: {}", u)
+			}
 		}
 	, BinMaths(op, x, y) => BinMaths(*op, f!(Rc::clone(x)), f!(Rc::clone(y))).rc()
 	, UnMaths(op, x) => UnMaths(*op, f!(Rc::clone(x))).rc()
@@ -925,6 +943,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 	let mut     regouts = HashMap::<String, (char, String, &ast::SpannedExpr)>::new();
 	let mut      widths = HashMap::<String, WireWidth>::new();
 	let mut    outchars = HashSet::<char>::new();
+	let mut      regins = HashSet::<String>::new();
 
 	// Todo: insert builtin width stuff if squashing 🤔
 
@@ -956,6 +975,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 					for r in rb.registers.iter() {
 						let  inname = format!("{}_{}", a, r.name);
 						let outname = format!("{}_{}", b, r.name);
+						regins.insert(inname.to_string());
 						regouts.insert(outname, (*b, inname.to_string(), &r.default));
 						widths.insert(inname, r.width); // RegOut width not used; stall/bubble special case.
 					}
@@ -969,7 +989,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 
 	use self::TestEval::*;
 
-	let program = Program { assignments, regouts, widths, outchars };
+	let program = Program { assignments, regouts, widths, outchars, regins };
 	let mut evals = Vec::<TestEval>::new();
 	fill_eval(test, &mut evals);
 	// like a stack, but a tree
@@ -1046,11 +1066,23 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 					})
 				}
 				// split current (local) env on the different paths
-				e.transf2_accum(&mut |x, _gs, _ms|{
+				e.transf2_accum(&mut |x, gs, _ms|{
 					let mss : Vec<Vec<(Unreplaced, Rc<Simple>)>> = match &m {
 						MatchType::Regread(a, b) => ab!(Src, Output, a.clone(), b.clone(), "reg_srcA", "reg_srcB", "reg_outputA", "reg_outputB"),
 						MatchType::Regwrite(a, b) => ab!(Dst, Input, a.clone(), b.clone(), "reg_dstE", "reg_dstM", "reg_inputE", "reg_inputM"),
-						MatchType::Any(_, _) => todo!(), // ??? what happens when 0 match?
+						MatchType::Any(l, r) => {
+							// a complete version would probably
+							//    perform match replacement on these givens as well
+							//    + l and r??
+							let mut memo = HashMap::<Rc<Simple>, Rc<Simple>>::new();
+							// givens can depend on values, matches
+							let state = EvalState { givens: HashMap::from_iter(gs) };
+
+							let simpl = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&l), false);
+							let simpr = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&r), false);
+
+							generate_matches(&program, simpl, simpr)
+						},
 					};
 					x.bs = x.bs.iter().flat_map(|b|
 						mss.iter().map(move |ms| EvalTree

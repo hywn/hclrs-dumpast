@@ -64,6 +64,7 @@ pub Test : Test =
 	, <l : Simple> "<-" <r : Simple> => Test::Condition(l.rc(), r.rc())
 	, "Match" "Regread" <a : VarName> <b : VarName> => Test::Match(MatchType::Regread(a, b))
 	, "Match" "Regwrite" <a : VarName> <b : VarName> => Test::Match(MatchType::Regwrite(a, b))
+	, "Match" "Any" <l : Simple> "<-" <r : Simple> => Test::Match(MatchType::Any(l.rc(), r.rc()))
 	}
 
 pub Simple : Simple =
