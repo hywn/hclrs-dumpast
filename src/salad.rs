@@ -537,10 +537,20 @@ impl Simplifiable for ast::Expr {
 fn sbin_commshort(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Option<Rc<Simple>> {
 	use self::Simple::*;
 	use self::BopCode::*;
+	use ast::WireWidth::*;
 
 	if let Literal(x) = *l {
 		return match (op, x)
-		{ (Or, WireValue{ bits: 0, .. }) => Some(l) // 0 | x
+		{ (Or, WireValue{ bits: 0, .. }) => Some(r)              //  0 | x = x
+		, (Or, WireValue{ bits: 1, width: Bits(1) }) => Some(l)  // ~0 | x = ~0
+		, (And, WireValue{ bits: 0, .. }) => Some(l)             //  0 & x = 0
+		, (And, WireValue{ bits: 1, width: Bits(1) }) => Some(r) // ~0 & x = x
+		, (LogicalOr, WireValue{ bits: 0, .. }) => Some(r)                 // false || x = x
+		, (LogicalOr, WireValue{ bits: _, .. }) => Some(bool2val!(true))   //  true || x = true
+		, (LogicalAnd, WireValue{ bits: 0, .. }) => Some(bool2val!(false)) // false && x = false
+		, (LogicalAnd, WireValue{ bits: _, .. }) => Some(r)                //  true && x = x
+		, (Add, WireValue{ bits: 0, .. }) => Some(r) //  x + 0 = x
+		//, (Or, WireValue{ bits: _, .. }) => Some(l) // 1 | x
 		, _ => None
 		}
 	}
