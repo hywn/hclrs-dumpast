@@ -39,6 +39,32 @@ pub enum BopCode
 	, Concat
 	}
 
+impl BopCode {
+	fn is_comm(self) -> bool {
+		use self::BopCode::*;
+		match self
+		{ Add          => true
+		, Sub          => false
+		, Mul          => true
+		, Div          => false
+		, Or           => true
+		, Xor          => true
+		, And          => true
+		, Equal        => true
+		, NotEqual     => true
+		, LessEqual    => false
+		, GreaterEqual => false
+		, Less         => false
+		, Greater      => false
+		, LogicalAnd   => true
+		, LogicalOr    => true
+		, LeftShift    => false
+		, RightShift   => false
+		, Concat       => false
+		}
+	}
+}
+
 // I copied and edited stuff from ast.rs because private and don't feel like editing source
 fn lit_bop(code: BopCode, left: WireValue, right: WireValue) -> WireValue {
 	use self::BopCode::*;
@@ -238,6 +264,18 @@ impl EquivResult {
 		{ Equiv        => true
 		, Ambiguous    => x != Equiv
 		, NotEquiv     => x == NotEquiv || x == Unsimplified
+		, Unsimplified => x == Unsimplified
+		}
+	}
+	fn cmax(self, x: EquivResult) -> EquivResult {
+		if self.ce(x) { self } else { x }
+	}
+	fn ke(self, x: EquivResult) -> bool { // sorting Equiv > NotEquiv > Ambiguous > Unsimplified
+		use self::EquivResult::*;
+		match self
+		{ Equiv        => true
+		, NotEquiv     => x != Equiv
+		, Ambiguous    => x == Ambiguous || x == Unsimplified
 		, Unsimplified => x == Unsimplified
 		}
 	}
@@ -875,6 +913,19 @@ pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
 			abs!(xlo == ylo && xhi == yhi)
 		} else {
 			Some(got)
+		}
+	}
+
+	if let (BinMaths(op1, x1, y1), BinMaths(op2, x2, y2)) = lr {
+		if op1 == op2 {
+			let most_unknown_incorrect = |l: EquivResult, r: EquivResult| if l.ke(r) { r } else { l }; // most unknown ; most incorrect of two options
+			let forward = most_unknown_incorrect(equiv(Rc::clone(x1), Rc::clone(x2)), equiv(Rc::clone(y1), Rc::clone(y2)));
+			return Some(if op1.is_comm() {
+				let backward = most_unknown_incorrect(equiv(Rc::clone(x1), Rc::clone(y2)), equiv(Rc::clone(y1), Rc::clone(x2)));
+				forward.cmax(backward) // most correct of two options
+			} else {
+				forward
+			})
 		}
 	}
 
