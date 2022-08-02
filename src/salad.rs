@@ -4,6 +4,7 @@ use std::fmt;
 use std::rc::Rc;
 use std::iter::FromIterator;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use serde_json::json;
 
 macro_rules! bool2val {
@@ -440,6 +441,7 @@ struct Program<'a>
 	{ assignments : HashMap<String, &'a ast::SpannedExpr>
 	,     regouts : HashMap<String, (char, String, &'a ast::SpannedExpr)>
 	,      widths : HashMap<String, WireWidth>
+	,    outchars : HashSet<char>
 	}
 
 struct EvalState
@@ -779,11 +781,25 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 					}
 				}
 			} else {
-				//Simple::Error(format!("<not found: {}>", n)).rc() // TODO: complete e.g. default values
+				if let "mem_writebit" = n.as_str() {
+					return bool2val!(false)
+				}
+				if let "reg_dstE" | "reg_dstM" = n.as_str() {
+					return Literal(WireValue{ bits: 15, width: WireWidth::Bits(4) }).rc()
+				}
+				let lenn = n.chars().count();
+				if (lenn == 7 && n.starts_with("stall_")) || (lenn == 8 && n.starts_with("bubble_")) {
+					let c = n.chars().rev().next().expect("oh no!");
+					if p.outchars.contains(&c) {
+						return bool2val!(false)
+					}
+				}
 				simple
 			};
 
-			got // TODO: squash(?)
+			got // TODO: squash(?) (IMPORTANT:: if you do squash, you need to add builtin widths).
+			// am honestly not a big a fan of (assignment) squashing because I think it only differs
+			// in that one really weird thing where -8 = 8 for 3-bit number. will revisit some time.
 		},
 		BinMaths(op, x, y) => {
 			let l = f!(Rc::clone(x));
@@ -908,6 +924,9 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 	let mut assignments = HashMap::<String, &ast::SpannedExpr>::new();
 	let mut     regouts = HashMap::<String, (char, String, &ast::SpannedExpr)>::new();
 	let mut      widths = HashMap::<String, WireWidth>::new();
+	let mut    outchars = HashSet::<char>::new();
+
+	// Todo: insert builtin width stuff if squashing 🤔
 
 	use ast::Statement;
 
@@ -933,6 +952,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 			Statement::RegisterBankDecl(rb) => {
 				let chars = rb.name.chars().collect::<Vec<char>>();
 				if let [a, b] = chars.as_slice() {
+					outchars.insert(*b);
 					for r in rb.registers.iter() {
 						let  inname = format!("{}_{}", a, r.name);
 						let outname = format!("{}_{}", b, r.name);
@@ -949,7 +969,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 
 	use self::TestEval::*;
 
-	let program = Program { assignments, regouts, widths };
+	let program = Program { assignments, regouts, widths, outchars };
 	let mut evals = Vec::<TestEval>::new();
 	fill_eval(test, &mut evals);
 	// like a stack, but a tree
