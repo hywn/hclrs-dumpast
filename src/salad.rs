@@ -4,8 +4,11 @@ use std::fmt;
 use std::rc::Rc;
 use std::iter::FromIterator;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use serde_json::json;
+
+macro_rules! bool2val {
+	($x: expr) => { Literal(WireValue{ bits: if $x {1} else {0}, width: WireWidth::Bits(1) }).rc() }
+}
 
 /* ╔═════════════════╗
    ║ datatypes stuff ║
@@ -157,13 +160,14 @@ impl From<ast::UnOpCode> for UopCode {
 }
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
-pub enum Unmatched
+pub enum Unreplaced
 	{ RegIn(String)  // e.g. @myreg[in]  -> String=myreg
 	, RegOut(String) // e.g. @myreg[out] -> String=myreg
 	, Input(String)  // e.g. $inputX     -> String=X
 	, Output(String) // e.g. $outputX    -> String=X
 	, Dst(String)    // e.g. $dstX       -> String=X
 	, Src(String)    // e.g. $srcX       -> String=X
+	, Value(String)  // e.g. #val        -> String=val
 	}
 
 #[derive(Debug, Eq, PartialEq, Hash)]
@@ -176,14 +180,14 @@ pub enum Unknown
 
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub enum Simple
-	{ Literal(WireValue) // literalesque
-	, Cool(String)       // "
-	, Wildcard           // "
-	, OneOfLogic(String, Vec<(u128, Simple)>)
+	{ Literal(WireValue)                  // literalesque
+	, Cool(String, Rc<Vec<CoolProperty>>) // "
+	, Wildcard                            // "
 	, Name(String)
-	, Unmatched(Unmatched)
+	, OneOfLogic(String, Vec<(u128, Rc<Simple>)>)
+	, Unreplaced(Unreplaced)
 	, Error(String)
-	, BinMaths(BopCode, Rc<Simple>, Rc<Simple>) // these contain other Simples
+	, BinMaths(BopCode, Rc<Simple>, Rc<Simple>) // these act like containers for other Simples
 	, UnMaths(UopCode, Rc<Simple>)              // "
 	, Slice(Rc<Simple>, u8, u8)                 // "
 	, Aged(Rc<Simple>)                          // "
@@ -196,9 +200,9 @@ impl Simple {
 	}
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Hash)]
 pub enum CoolProperty
-	{ OneOf(HashSet<u128>)
+	{ OneOf(Vec<u128>)
 	, Neq(Rc<Simple>)
 	}
 
@@ -294,9 +298,9 @@ fn disp_aged(n: u32, x: &Simple) -> (u32, &Simple) {
 	}
 }
 
-impl fmt::Display for Unmatched {
+impl fmt::Display for Unreplaced {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		use self::Unmatched::*;
+		use self::Unreplaced::*;
 		match self
 		{ RegIn(s)  => write!(f, "regin:{}", s)
 		, RegOut(s) => write!(f, "regout:{}", s)
@@ -304,6 +308,7 @@ impl fmt::Display for Unmatched {
 		, Output(s) => write!(f, "$output{}", s)
 		, Src(s)    => write!(f, "$src{}", s)
 		, Dst(s)    => write!(f, "$dst{}", s)
+		, Value(s)  => write!(f, "#'{}", s) // the ' differentiates it from Cool
 		}
 	}
 }
@@ -317,11 +322,13 @@ impl fmt::Display for Simple {
 				{ WireWidth::Bits(w)   => write!(f, "({}):{}", w, bits)
 				, WireWidth::Unlimited => write!(f, "inf:{}", bits)
 				}
-			, Cool(s) => write!(f, "{}", s)
+			, Cool(s, _) => write!(f, "#{}", s)
 			, Wildcard => write!(f, "???")
-			, OneOfLogic(_, _) => todo!()
+			, OneOfLogic(name, xs) =>
+				{ write!(f, "[oneof#{}: {}]", name, xs.iter().map(|(x, y)| format!("{}->{}", x, y)).reduce(|a, b| format!("{}, {}", a, b)).unwrap_or("empty".to_string()))
+				}
 			, Name(s) => write!(f, "{}", s)
-			, Unmatched(x) => write!(f, "{}", x)
+			, Unreplaced(x) => write!(f, "{}", x)
 			, Error(s) => write!(f, "{}", s)
 			, BinMaths(op, l, r) => write!(f, "<{} {} {}>", l, op, r)
 			, UnMaths(op, x) => write!(f, "{}({})", op, x)
@@ -411,7 +418,7 @@ pub fn ageflat(root: Rc<Simple>) -> Rc<Simple> {
 				, InSet(x) => InSet(distr!(x))
 				} ).rc()
 			, Literal(_) => Rc::clone(x)
-			, Cool(_)    => Rc::clone(x)
+			, Cool(..)   => Rc::clone(x)
 			, Simple::Wildcard   => Rc::clone(x)
 			, _ => root
 			}
@@ -437,9 +444,7 @@ struct Program<'a>
 
 struct EvalState
 	{ givens : HashMap<Rc<Simple>, Rc<Simple>>
-	//; cool stuff
-	//; cache
-	//; matches?
+	// should probably get rid of this struct?
 	}
 
 type Memo = HashMap<Rc<Simple>, Rc<Simple>>;
@@ -506,10 +511,8 @@ impl Simplifiable for ast::Expr {
 				let x = f!(e_x);
 				let xs : Vec<Rc<Simple>> = e_xs.iter().map(|x| f!(x)).collect();
 
-				let no = Literal(WireValue{bits: 0, width: WireWidth::Bits(1)}).rc();
-
 				xs.iter().map(|thing| sbin(BopCode::Equal, Rc::clone(&x), Rc::clone(thing)))
-					.fold(no, |a, b| sbin(BopCode::Or, a, b))
+					.fold(bool2val!(false), |a, b| sbin(BopCode::Or, a, b))
 			},
 			Mux(opts) => {
 				// TODO: cool logic
@@ -528,14 +531,37 @@ impl Simplifiable for ast::Expr {
 	}
 }
 
-fn sbin_commshort(op: BopCode, l: Rc<Simple>, _r: Rc<Simple>) -> Option<Rc<Simple>> {
+fn sbin_commshort(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Option<Rc<Simple>> {
 	use self::Simple::*;
 	use self::BopCode::*;
 
 	if let Literal(x) = *l {
 		return match (op, x)
-		{ (Or, WireValue{ bits: 0, .. }) => Some(l)
+		{ (Or, WireValue{ bits: 0, .. }) => Some(l) // 0 | x
 		, _ => None
+		}
+	}
+
+	let lr = (&*l, &*r);
+
+	// this can technically go in sbin to avoid checking twice
+	// but I don't want to write out the full default failed-value thing
+	if let (OneOfLogic(xname, xs), OneOfLogic(yname, ys)) = lr {
+		if xname != yname { // cannot compare different values' OneOfLogics
+			return None
+		}
+		// == LOGIC WARNING ==
+		// assumes that xs and ys have same keys in same order
+		// because they have the same name <=> were produced by
+		// the same Oneof(..). But I'm guessing you can
+		// (re)assign values (which I should probably check against)
+		// to the same name and break all this logic. luckily
+		// as long as the test-writer writes tests well
+		// this should not happen.
+		if let Or | Xor | And | Equal | NotEqual | LogicalAnd | LogicalOr = op {
+			return Some(ool_simplify(OneOfLogic(xname.to_string(), xs.iter().zip(ys.iter()).map(|((n, x), (_, y))| (*n, sbin(op, Rc::clone(x), Rc::clone(y)))).collect()).rc()))
+		} else {
+			return None
 		}
 	}
 
@@ -544,11 +570,70 @@ fn sbin_commshort(op: BopCode, l: Rc<Simple>, _r: Rc<Simple>) -> Option<Rc<Simpl
 
 fn sbin(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Rc<Simple> {
 	use self::Simple::*;
+	use self::BopCode::*;
 
 	let lr = (&*l, &*r);
 
 	if let (Literal(x), Literal(y)) = lr {
 		return Literal(lit_bop(op, *x, *y)).rc()
+	}
+
+	if let (Cool(xname, _), Cool(yname, _)) = lr {
+		if xname == yname {
+			return Literal(WireValue{bits:1, width:WireWidth::Bits(1)}).rc()
+		}
+	}
+
+	// this code makes me sad
+	if let Cool(name, props) = &*l {
+		for prop in props.iter() {
+			match prop {
+				CoolProperty::OneOf(ns) => {
+					if let Literal(_) = &*r {
+						return OneOfLogic(name.to_string(), ns.iter().map(|n| (*n, sbin(op, Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc(), Rc::clone(&r)))).collect()).rc()
+					}
+				},
+				CoolProperty::Neq(x) => {
+					// there are probably misc other simplifications you could
+					// do with op=something other than Equal or NotEqual but..
+					if let Equal | NotEqual = op {
+						if let Literal(WireValue{bits, ..}) = *sbin(Equal, Rc::clone(x), Rc::clone(&r)) {
+							// bits represents R == (the thing that is not L) <=> whether L is neq R
+							return match op
+							{ Equal => bool2val!(bits == 0)
+							, _     => bool2val!(bits != 0)
+							}
+						}
+					}
+				},
+			}
+		}
+	}
+
+	// I literally copied this from above and changed the orders
+	if let Cool(name, props) = &*r {
+		for prop in props.iter() {
+			match prop {
+				CoolProperty::OneOf(ns) => {
+					if let Literal(_) = &*l {
+						return OneOfLogic(name.to_string(), ns.iter().map(|n| (*n, sbin(op, Rc::clone(&r), Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc()))).collect()).rc()
+					}
+				},
+				CoolProperty::Neq(x) => {
+					// there are probably misc other simplifications you could
+					// do with op=something other than Equal or NotEqual but..
+					if let Equal | NotEqual = op {
+						if let Literal(WireValue{bits, ..}) = *sbin(Equal, Rc::clone(x), Rc::clone(&l)) {
+							// bits represents L == (the thing that is not R) <=> whether R is neq L
+							return match op
+							{ Equal => bool2val!(bits == 0)
+							, _     => bool2val!(bits != 0)
+							}
+						}
+					}
+				},
+			}
+		}
 	}
 
 	if let Some(x) = sbin_commshort(op, Rc::clone(&l), Rc::clone(&r)) {
@@ -573,7 +658,7 @@ fn deage(x: Rc<Simple>) -> Option<Rc<Simple>> {
 	match &*x
 	{ Aged(x)    => Some(Rc::clone(x))
 	, Literal(_) => Some(x)
-	, Cool(_)    => Some(x)
+	, Cool(..)   => Some(x)
 	, Wildcard   => Some(x)
 	, Slice(x, lo, hi) => match deage(Rc::clone(x))
 		{ Some(x) => Some(Slice(x, *lo, *hi).rc())
@@ -597,6 +682,19 @@ fn is_aged(x: &Rc<Simple>) -> bool {
 fn rawslice(x: u128, lo: u8, hi: u8) -> u128{
 	let mask = (!0) >> (128 - (hi - lo));
 	x.wrapping_shr(lo as u32) & mask
+}
+
+fn ool_simplify(x: Rc<Simple>) -> Rc<Simple> {
+	if let Simple::OneOfLogic(_, vals) = &*x {
+		let (_, fst) = vals.first().expect("empty oneoflogic");
+		if vals.iter().all(|(_, x)| x == fst) {
+			Rc::clone(fst)
+		} else {
+			x
+		}
+	} else {
+		x
+	}
 }
 
 fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simple: Rc<Simple>, er: bool) -> Rc<Simple> { // er: expand regouts
@@ -652,8 +750,8 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 			, _ => simple
 			}
 		},
-		OneOfLogic(_, _) => {
-			todo!()
+		OneOfLogic(..) => {
+			ool_simplify(simple) // will this ever actually simplify anything?
 		},
 		Name(n) => {
 			let got = if let Some(e) = p.assignments.get(n) {
@@ -709,7 +807,7 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 			let got = s_simplify(p, &aged_state, memo, lanz.age(), Rc::clone(x), er);
 			ageflat(Aged(got).rc())
 		},
-		_ => simple
+		_ => simple,
 	};
 	memo.insert(lanz.fullpath(simple2), Rc::clone(&got));
 	got
@@ -727,6 +825,13 @@ pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
 
 	if let (Name(x), Name(y)) = lr {
 		return abs!(x == y)
+	}
+
+	if let (Cool(..), Cool(..)) = lr {
+		return match *sbin(BopCode::Equal, l, r)
+			{ Literal(WireValue{ bits, .. }) => abs!(bits != 0)
+			, _ => Some(Ambiguous)
+			}
 	}
 
 	if let (Literal(WireValue{ bits: x, width: wx }), Literal(WireValue{ bits: y, width: wy })) = lr {
@@ -759,6 +864,7 @@ pub fn equiv(l: Rc<Simple>, r: Rc<Simple>) -> EquivResult {
 	}
 }
 
+// remove side-by-side duplicates
 fn prune<T: DoubleEndedIterator>(xs: T) -> Vec<T::Item> where T::Item: Eq {
 	let mut res = Vec::<T::Item>::new();
 	for x in xs {
@@ -772,15 +878,17 @@ fn prune<T: DoubleEndedIterator>(xs: T) -> Vec<T::Item> where T::Item: Eq {
 	res
 }
 
-pub fn match_replace(map: &HashMap<Unmatched, Rc<Simple>>, x: Rc<Simple>) -> Rc<Simple> {
+// replace matches, values before simplification
+pub fn unreplacement_replacement(map: &HashMap<Unreplaced, Rc<Simple>>, x: Rc<Simple>) -> Rc<Simple> {
 	use self::Simple::*;
+	use self::CoolProperty::*;
 
 	macro_rules! f {
-		($x: expr) => { match_replace(map, $x) }
+		($x: expr) => { unreplacement_replacement(map, $x) }
 	}
 
 	match &*x
-	{ Unmatched(u) => match map.get(&u)
+	{ Unreplaced(u) => match map.get(&u)
 		{ Some(v) => Rc::clone(v)
 		, None => panic!("Could not find in scope: {}", u)
 		}
@@ -788,6 +896,10 @@ pub fn match_replace(map: &HashMap<Unmatched, Rc<Simple>>, x: Rc<Simple>) -> Rc<
 	, UnMaths(op, x) => UnMaths(*op, f!(Rc::clone(x))).rc()
 	, Slice(x, lo, hi) => Slice(f!(Rc::clone(x)), *lo, *hi).rc()
 	, Aged(x) => Aged(f!(Rc::clone(x))).rc()
+	, Cool(n, xs) => Cool(n.to_string(), Rc::new(xs.iter().map(|prop| match prop
+			{ OneOf(xs) => OneOf(xs.clone())
+			, Neq(x) => Neq(f!(Rc::clone(x)))
+			}).collect::<Vec<CoolProperty>>())).rc()
 	, _ => x
 	}
 }
@@ -841,13 +953,13 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 	let mut evals = Vec::<TestEval>::new();
 	fill_eval(test, &mut evals);
 	// like a stack, but a tree
-	let mut e = EvalTree{name: "root".to_string(), givens: Vec::new(), matches: Vec::new(), bs: Vec::new(), results: Vec::new() };
+	let mut e = EvalTree{name: "root".to_string(), givens: Vec::new(), replacements: Vec::new(), bs: Vec::new(), results: Vec::new() };
 
 	for eval in evals {
 		match eval {
 			Start(name) => {
 				// push new env onto every old env
-				e.push(&|| EvalTree{name: name.to_string(), givens: Vec::new(), matches: Vec::new(), bs: Vec::new(), results: Vec::new() })
+				e.push(&|| EvalTree{name: name.to_string(), givens: Vec::new(), replacements: Vec::new(), bs: Vec::new(), results: Vec::new() })
 			},
 			End => {
 				// pop all current envs
@@ -867,12 +979,13 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 					// is too much pain to add to TestEval so will just use one-time memo for each equiv
 					// probably fast enough for all purposes
 					let mut memo = HashMap::<Rc<Simple>, Rc<Simple>>::new();
-					let matchmap = HashMap::<Unmatched, Rc<Simple>>::from_iter(ms);
-					let state = EvalState { givens: HashMap::from_iter(gs) };
+					let matchmap = HashMap::<Unreplaced, Rc<Simple>>::from_iter(ms);
+					// givens can depend on values, matches
+					let state = EvalState { givens: HashMap::from_iter(gs.into_iter().map(|(x, y)| (unreplacement_replacement(&matchmap, x), unreplacement_replacement(&matchmap, y)) )) };
 					let l = Rc::clone(&a);
 					let r = Rc::clone(&b);
-					let ll = match_replace(&matchmap, Rc::clone(&l));
-					let rr = match_replace(&matchmap, Rc::clone(&r));
+					let ll = unreplacement_replacement(&matchmap, Rc::clone(&l));
+					let rr = unreplacement_replacement(&matchmap, Rc::clone(&r));
 					let simpl = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&ll), true);
 					let simpr = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&rr), true);
 					let res = equiv(Rc::clone(&simpl), Rc::clone(&simpr));
@@ -899,7 +1012,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 				});
 			},
 			Match(m) => { // TODO: clearly define what happens when rematching something?
-				use self::Unmatched::*;
+				use self::Unreplaced::*;
 				macro_rules! ab {
 					($sd: expr, $oi: expr, $a: expr, $b: expr, $sda: expr, $sdb: expr, $oia: expr, $oib: expr) => ({
 						let sda = Simple::Name($sda.to_string()).rc();
@@ -914,7 +1027,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 				}
 				// split current (local) env on the different paths
 				e.transf2_accum(&mut |x, _gs, _ms|{
-					let mss : Vec<Vec<(Unmatched, Rc<Simple>)>> = match &m {
+					let mss : Vec<Vec<(Unreplaced, Rc<Simple>)>> = match &m {
 						MatchType::Regread(a, b) => ab!(Src, Output, a.clone(), b.clone(), "reg_srcA", "reg_srcB", "reg_outputA", "reg_outputB"),
 						MatchType::Regwrite(a, b) => ab!(Dst, Input, a.clone(), b.clone(), "reg_dstE", "reg_dstM", "reg_inputE", "reg_inputM"),
 						MatchType::Any(_, _) => todo!(), // ??? what happens when 0 match?
@@ -923,13 +1036,20 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 						mss.iter().map(move |ms| EvalTree
 							{ name: b.name.to_string()
 							, givens: b.givens.clone()
-							, matches: b.matches.clone().into_iter().chain(ms.clone().into_iter()).collect()
+							, replacements: b.replacements.clone().into_iter().chain(ms.clone().into_iter()).collect()
 							, bs: Vec::new() // b.bs *should* be empty..
 							, results: b.results.clone()
 							}
 						)
 					).collect()
 				}, &vec!(), &vec!())
+			},
+			Value(name, props) => {
+				let ps = Rc::new(props);
+				e.transf1_accum(&mut |x, _, rs|{
+					let ok = unreplacement_replacement(&HashMap::from_iter(rs.into_iter()), Simple::Cool(name.clone(), Rc::clone(&ps)).rc());
+					x.replacements.push((Unreplaced::Value(name.clone()), ok))
+				}, &vec!(), &vec!());
 			},
 		}
 	}
@@ -938,14 +1058,14 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 }
 
 type AcGivens = Vec<(Rc<Simple>, Rc<Simple>)>;
-type AcMatches = Vec<(Unmatched, Rc<Simple>)>;
+type AcMatches = Vec<(Unreplaced, Rc<Simple>)>;
 
 // something like tree used as stack?
 #[derive(Debug)]
 struct EvalTree
 	{ name: String
 	, givens: Vec<(Rc<Simple>, Rc<Simple>)>
-	, matches: Vec<(Unmatched, Rc<Simple>)>
+	, replacements: Vec<(Unreplaced, Rc<Simple>)>
 	, bs: Vec<EvalTree> // branches
 	, results: Vec<Rc<TestResult>>
 	}
@@ -979,35 +1099,35 @@ impl EvalTree {
 			}
 		}
 	}
-	fn transf2_accum<F>(&mut self, f: &mut F, givens: &AcGivens, matches: &AcMatches) where F: FnMut(&mut EvalTree, AcGivens, AcMatches) -> () {
+	fn transf2_accum<F>(&mut self, f: &mut F, givens: &AcGivens, replacements: &AcMatches) where F: FnMut(&mut EvalTree, AcGivens, AcMatches) -> () {
 		let mut givens2 = givens.clone();
-		let mut matches2 = matches.clone();
+		let mut replacements2 = replacements.clone();
 
 		givens2.extend(self.givens.clone());
-		matches2.extend(self.matches.clone());
+		replacements2.extend(self.replacements.clone());
 
 		if self.bs.is_empty() {
 			return
 		} else if self.bs.iter().all(|x| x.bs.is_empty()) {
-			f(self, givens2, matches2) // second level
+			f(self, givens2, replacements2) // second level
 		} else {
 			for b in self.bs.iter_mut() {
-				b.transf2_accum(f, &givens2, &matches2)
+				b.transf2_accum(f, &givens2, &replacements2)
 			}
 		}
 	}
-	fn transf1_accum<F>(&mut self, f: &mut F, givens: &AcGivens, matches: &AcMatches) where F: FnMut(&mut EvalTree, AcGivens, AcMatches) -> () {
+	fn transf1_accum<F>(&mut self, f: &mut F, givens: &AcGivens, replacements: &AcMatches) where F: FnMut(&mut EvalTree, AcGivens, AcMatches) -> () {
 		let mut givens2 = givens.clone();
-		let mut matches2 = matches.clone();
+		let mut replacements2 = replacements.clone();
 
 		givens2.extend(self.givens.clone());
-		matches2.extend(self.matches.clone());
+		replacements2.extend(self.replacements.clone());
 
 		if self.bs.is_empty() {
-			f(self, givens2, matches2)
+			f(self, givens2, replacements2)
 		} else {
 			for b in self.bs.iter_mut() {
-				b.transf1_accum(f, &givens2, &matches2)
+				b.transf1_accum(f, &givens2, &replacements2)
 			}
 		}
 	}
@@ -1029,6 +1149,7 @@ enum TestEval
 	{ Start(String)
 	, End
 	, Given(Rc<Simple>, Rc<Simple>)
+	, Value(String, Vec<CoolProperty>)
 	, Condition(Rc<Simple>, Rc<Simple>)
 	, Match(MatchType)
 	}
@@ -1043,7 +1164,7 @@ fn fill_eval(ast: Test, stack: &mut Vec<TestEval>) {
 			}
 			stack.push(End);
 		},
-		Test::ValueDef(_, _) => todo!(),
+		Test::ValueDef(x, y) => stack.push(Value(x, y)),
 		Test::Given(x, y) => stack.push(Given(x, y)),
 		Test::Condition(x, y) => stack.push(Condition(x, y)),
 		Test::Match(m) => stack.push(Match(m)),
