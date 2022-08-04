@@ -831,19 +831,22 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 				}
 			} else {
 				if let "mem_writebit" = n.as_str() {
-					return bool2val!(false)
-				}
-				if let "reg_dstE" | "reg_dstM" = n.as_str() {
-					return Literal(WireValue{ bits: 15, width: WireWidth::Bits(4) }).rc()
-				}
-				let lenn = n.chars().count();
-				if (lenn == 7 && n.starts_with("stall_")) || (lenn == 8 && n.starts_with("bubble_")) {
-					let c = n.chars().rev().next().expect("oh no!");
-					if p.outchars.contains(&c) {
-						return bool2val!(false)
+					bool2val!(false)
+				} else if let "reg_dstE" | "reg_dstM" = n.as_str() {
+					Literal(WireValue{ bits: 15, width: WireWidth::Bits(4) }).rc()
+				} else {
+					let lenn = n.chars().count();
+					if (lenn == 7 && n.starts_with("stall_")) || (lenn == 8 && n.starts_with("bubble_")) {
+						let c = n.chars().rev().next().expect("oh no!");
+						if p.outchars.contains(&c) {
+							bool2val!(false)
+						} else {
+							simple
+						}
+					} else {
+						simple
 					}
 				}
-				simple
 			};
 
 			got // TODO: squash(?) (IMPORTANT:: if you do squash, you need to add builtin widths).
