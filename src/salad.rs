@@ -490,7 +490,7 @@ struct EvalState
 
 type Memo = HashMap<Rc<Simple>, Rc<Simple>>;
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Lanz // thing to generate "full path" of recursed Simples
 	{ age: u32
 	}
@@ -500,7 +500,7 @@ impl Lanz {
 		Lanz {age: self.age+1}
 	}
 	fn fullpath(&self, x: Rc<Simple>) -> Rc<Simple> {
-		(0..self.age).fold(x, |x, _| Simple::Aged(x).rc())
+		ageflat((0..self.age).fold(x, |x, _| Simple::Aged(x).rc()))
 	}
 }
 
@@ -525,27 +525,30 @@ impl Simplifiable for ast::Expr {
 		macro_rules! s {
 			($x: expr) => { s_simplify(p, state, memo, lanz, $x, er) }
 		}
+		macro_rules! root { // when you have already evaluated both terms
+			($x: expr) => { s_simplify(p, state, memo, Lanz{age:0}, $x, er) }
+		}
 
 		match self {
 			Constant(v) => Literal(*v).rc(),
 			BinOp(op, x, y) => {
 				let xx = f!(x); // need to do this so uses memo once at a time or something
 				let yy = f!(y);
-				s!(BinMaths(BopCode::from(*op), xx, yy).rc())
+				root!(BinMaths(BopCode::from(*op), xx, yy).rc())
 			},
 			UnOp(op, x) => {
 				let xx = f!(x);
-				s!(UnMaths(UopCode::from(*op), xx).rc())
+				root!(UnMaths(UopCode::from(*op), xx).rc())
 			},
 			NamedWire(name) => s!(Name(name.to_string()).rc()),
 			BitSelect{ from, low, high } => {
 				let xx = f!(from);
-				s!(Slice(xx, *low, *high).rc())
+				root!(Slice(xx, *low, *high).rc())
 			},
 			Concat(x, y) => {
 				let xx = f!(x);
 				let yy = f!(y);
-				s!(BinMaths(BopCode::Concat, xx, yy).rc())
+				root!(BinMaths(BopCode::Concat, xx, yy).rc())
 			},
 			InSet(e_x, e_xs) => {
 				// TODO: cool logic
@@ -704,29 +707,14 @@ fn sun(op: UopCode, x: Rc<Simple>) -> Rc<Simple> {
 	}
 }
 
-fn deage(x: Rc<Simple>) -> Option<Rc<Simple>> {
-	use self::Simple::*;
-	match &*x
-	{ Aged(x)    => Some(Rc::clone(x))
-	, Literal(_) => Some(x)
-	, Cool(..)   => Some(x)
-	, Wildcard   => Some(x)
-	, Slice(x, lo, hi) => match deage(Rc::clone(x))
-		{ Some(x) => Some(Slice(x, *lo, *hi).rc())
-		, None => None
-		}
-	, _ => None // does not cover maths but I don't think will ever give maths
-	}
-}
-
-fn is_aged(x: &Rc<Simple>) -> bool {
+fn whatage(x: &Rc<Simple>) -> u32 {
 	use self::Simple::*;
 	match &*(*x)
-	{ Aged(_) => true
-	, BinMaths(_, l, r) => is_aged(l) || is_aged(r)
-	, UnMaths(_, x) => is_aged(x)
-	, Slice(x, _, _) => is_aged(x)
-	, _ => false
+	{ Aged(x) => whatage(x) + 1
+	, BinMaths(_, l, r) => std::cmp::max(whatage(l), whatage(r))
+	, UnMaths(_, x) => whatage(x)
+	, Slice(x, _, _) => whatage(x)
+	, _ => 0
 	}
 }
 
@@ -748,6 +736,8 @@ fn ool_simplify(x: Rc<Simple>) -> Rc<Simple> {
 	}
 }
 
+// should return fullpath using lanz
+// decidely givens only use fullpath
 fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simple: Rc<Simple>, er: bool) -> Rc<Simple> { // er: expand regouts
 	use self::Simple::*;
 
@@ -758,75 +748,79 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 		($x: expr) => { $x.simplify(p, state, memo, lanz, er) }
 	}
 	macro_rules! last {
-		($x: expr) => { s_simplify(p, state, memo, lanz, Aged($x).rc(), er) }
+		($x: expr) => { s_simplify(p, state, memo, lanz.age(), $x, er) }
 	}
 	macro_rules! lastname {
 		($n: expr) => { last!(Name($n).rc()) }
 	}
+	macro_rules! root {
+		($x: expr) => { s_simplify(p, state, memo, Lanz{age:0}, $x, er) }
+	}
 
 	// should re-simplify anything that *could* have expanded.
 
-	if let Some(x) = state.givens.get(&simple) { // given
-		return f!(Rc::clone(x))
+	let fullsimple = lanz.fullpath(Rc::clone(&simple));
+
+	if let Some(x) = state.givens.get(&fullsimple) { // given
+		return root!(Rc::clone(x))
 	}
-	if let Some(x) = memo.get(&lanz.fullpath(Rc::clone(&simple))) { // memo
+	if let Some(x) = memo.get(&fullsimple) { // memo
 		return Rc::clone(x)
 	}
 
-	let simple2 = Rc::clone(&simple);
-
 	let got = match &*simple {
 		Slice(x, lo, hi) => {
-			match &*f!(Rc::clone(x))
-			{ Name(name) =>
-				// subslice of given slice (very cool code!)
-				if let Some(x) = state.givens.iter().filter_map(|(k, v)| {
-					if let Slice(y, l, h) = &*(*k) {
-						if let Name(n) = &*(*y) {
-							if *n == *name && *l <= *lo && *h >= *hi {
-								return Some(Slice(Rc::clone(v), *lo, *hi).rc())
-							}
-						}
-					}
-					None
-				}).next() { f!(x) } else { simple }
-			// Todo: check bounds more
-			, &Literal(WireValue{ bits, width }) => Literal(WireValue{ bits: rawslice(bits, *lo, *hi), width }).rc()
+			match &*f!(Rc::clone(x)) // Todo: check bounds more
+			{ &Literal(WireValue{ bits, width }) => Literal(WireValue{ bits: rawslice(bits, *lo, *hi), width }).rc()
 			, Slice(x, l, h) =>
 				if (*l + *lo) > *h || (*l + *hi) > *h {
 					panic!("slice of slice out of bounds")
 				} else {
 					Slice(Rc::clone(x), *l + *lo, *l + *hi).rc()
 				}
-			, _ => simple
+			, other =>
+				{
+					let possible = state.givens.iter().filter_map(|(k, v)|{
+						if let Slice(x, l, h) = &**k {
+							if *other == **x && l <= lo && h >= hi {
+								return Some(Slice(Rc::clone(v), *lo, *hi).rc())
+							}
+						}
+						None
+					}).next();
+
+					match possible
+					{ Some(x) => root!(x)
+					, None => fullsimple
+					}
+				}
 			}
 		},
 		OneOfLogic(..) => {
-			ool_simplify(simple) // will this ever actually simplify anything?
+			lanz.fullpath(ool_simplify(simple)) // will this ever actually simplify anything?
 		},
 		Name(n) => {
-			let got = if let Some(e) = p.assignments.get(n) {
+			let got = if let Some(e) = p.assignments.get(n) { // namedwire
 				simp!(e)
-			} else if let Some((c, inname, defval)) = p.regouts.get(n) {
-				if !er {
-					simple // do not simplify regouts (for matching purposes)
-				} else if !state.givens.iter().any(|(k, v)| is_aged(k) || is_aged(v)) {
+			} else if let Some((c, inname, defval)) = p.regouts.get(n) { // regout
+				if !er { // do-not-simplify-regouts option
+					Rc::clone(&fullsimple)
+				} else if state.givens.iter().all(|(k, v)| lanz.age >= whatage(k) && lanz.age >= whatage(v)) {
 					simp!(defval) // reached edge of age
 				} else {
 					let bubble = lastname!(format!("bubble_{}", c));
 					match *bubble {
 						Literal(WireValue{ bits: 0, ..}) => {
-
-							let stall  = lastname!(format!("stall_{}", c));
+							let stall = lastname!(format!("stall_{}", c));
 
 							match *stall {
 								Literal(WireValue{ bits: 0, ..}) => lastname!(inname.to_string()), // not bubbled or stalled
 								Literal(_) => last!(simple), // stalled
-								_ => Unknown(self::Unknown::StalledRegOut(simple, stall)).rc(),
+								_ => lanz.fullpath(Unknown(self::Unknown::StalledRegOut(simple, stall)).rc()),
 							}
 						},
 						Literal(_) => simp!(defval), // bubbled
-						_ => Unknown(self::Unknown::BubbledRegOut(simple, bubble)).rc(),
+						_ => lanz.fullpath(Unknown(self::Unknown::BubbledRegOut(simple, bubble)).rc()),
 					}
 				}
 			} else {
@@ -841,13 +835,15 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 						if p.outchars.contains(&c) {
 							bool2val!(false)
 						} else {
-							simple
+							Rc::clone(&fullsimple)
 						}
 					} else {
-						simple
+						Rc::clone(&fullsimple)
 					}
 				}
 			};
+
+			memo.insert(fullsimple, Rc::clone(&got));
 
 			got // TODO: squash(?) (IMPORTANT:: if you do squash, you need to add builtin widths).
 			// am honestly not a big a fan of (assignment) squashing because I think it only differs
@@ -862,22 +858,10 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 			sun(*op, f!(Rc::clone(x)))
 		},
 		Aged(x) => {
-			// not pretty but probably not many givens so not real worry (maybe)?
-			let aged_givens : HashMap<Rc<Simple>, Rc<Simple>> = HashMap::from_iter(
-				state.givens.iter().filter_map(
-					|(x, y)| match (deage(Rc::clone(x)), deage(Rc::clone(y)))
-						{ (Some(x), Some(y)) => Some((x, y))
-						, _ => None
-						}
-				)
-			);
-			let aged_state = EvalState { givens: aged_givens };
-			let got = s_simplify(p, &aged_state, memo, lanz.age(), Rc::clone(x), er);
-			ageflat(Aged(got).rc())
+			last!(Rc::clone(x))
 		},
 		_ => simple,
 	};
-	memo.insert(lanz.fullpath(simple2), Rc::clone(&got));
 	got
 }
 
