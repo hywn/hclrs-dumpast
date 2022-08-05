@@ -1076,7 +1076,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 				e.transf1(&|x| x.givens.push((Rc::clone(&l), Rc::clone(&r))));
 			},
 			Condition(a, b) => {
-				let mut max = EquivResult::NotEquiv; // max correctness of any current env
+				let mut max = EquivResult::Unsimplified; // max correctness of any current env
 				// add condition to each current env
 				e.transf1_accum(&mut |x, gs, ms| {
 					// givens can vary across threads (because of matching) so cannot have global memo.
@@ -1105,15 +1105,13 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 					x.results.push(Rc::new(got))
 				}, &vec!(), &vec!());
 				// prune envs
-				e.transf2(&mut |x| {
-					x.bs.retain(|b| {
-						if let TestResult::Condition{ res, .. } = &**b.results.last().expect("unexpected program state") {
-							*res == max
-						} else {
-							panic!("unexpected program state")
-						}
-					})
-				});
+				e.pruneleaf(&|x|
+					if let TestResult::Condition{ res, .. } = &**x.results.last().expect("unexpected program state") {
+						*res == max
+					} else {
+						panic!("unexpected program state")
+					}
+				);
 			},
 			Match(m) => { // TODO: clearly define what happens when rematching something?
 				use self::Unreplaced::*;
@@ -1187,6 +1185,15 @@ struct EvalTree
 	}
 
 impl EvalTree {
+	// remove any branches that do not meet predicat; returns whether should remove self
+	fn pruneleaf<F>(&mut self, f: &F) -> bool where F: Fn(&EvalTree) -> bool {
+		if self.bs.is_empty() {
+			f(self)
+		} else {
+			self.bs.retain_mut(|x| x.pruneleaf(f));
+			!self.bs.is_empty()
+		}
+	}
 	fn pop(&mut self) -> Vec<EvalTree> { // removes level
 		let mut res = Vec::new();
 		self.transf2(&mut |r| {
