@@ -910,6 +910,18 @@ pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
 		}
 	}
 
+	if let (Cool(..), Literal(..)) = lr {
+		return match *sbin(BopCode::Equal, l, r)
+			{ Literal(WireValue{ bits, .. }) => abs!(bits != 0)
+			, _ => abs!(false) // I really can't justify why this should be NotEquiv other than
+			// "my last solution did it". I guess since Cool represents any number of possible values, and
+			// if it can't compare it with this single Literal, the only thing that means is that it
+			// is *not* that value? but then that should be handled in sbin, and the _ case here should be panic!, I think.
+			// I guess I'll revisit this if I come across sbin(Equal, Cool, Literal) again; for now I'll just
+			// copy old solution logic because reasoning properly about this takes too much time
+			}
+	}
+
 	if let (Slice(x, xlo, xhi), Slice(y, ylo, yhi)) = lr {
 		let got = equiv(Rc::clone(x), Rc::clone(y));
 		return if got == Equiv {
@@ -932,6 +944,20 @@ pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
 		}
 	}
 
+	if let Name(_) = *l {
+		if None == find(&|thing| thing == l, Rc::clone(&r)) {
+			return Some(NotEquiv)
+		}
+	}
+
+	if let (Slice(x, _, _), y) = lr {
+		if let Name(_) = &**x {
+			if None == find(&|thing| thing == Rc::clone(x), r) {
+				return Some(NotEquiv)
+			}
+		}
+	}
+
 	None
 }
 
@@ -942,6 +968,23 @@ pub fn equiv(l: Rc<Simple>, r: Rc<Simple>) -> EquivResult {
 		return x
 	} else {
 		EquivResult::Ambiguous
+	}
+}
+
+fn find<F>(f: &F, x: Rc<Simple>) -> Option<Rc<Simple>> where F: Fn(Rc<Simple>) -> bool {
+	use self::Simple::*;
+	macro_rules! f {
+		($x: expr) => { find(f, Rc::clone($x)) }
+	}
+	if f(Rc::clone(&x)) {
+		return Some(x)
+	}
+	match &*x
+	{ BinMaths(_, l, r) => f!(l).or_else(|| f!(r))
+	, UnMaths(_, x) => f!(x)
+	, Slice(x, _, _) => f!(x)
+	, Aged(x) => f!(x)
+	, _ => None // unknowns something??????
 	}
 }
 
