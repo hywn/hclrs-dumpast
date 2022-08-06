@@ -805,6 +805,7 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 			lanz.fullpath(ool_simplify(simple)) // will this ever actually simplify anything?
 		},
 		Name(n) => {
+			let myname = n.clone(); // 🙂
 			let got = if let Some(e) = p.assignments.get(n) { // namedwire
 				simp!(e)
 			} else if let Some((c, inname, defval)) = p.regouts.get(n) { // regout
@@ -848,11 +849,19 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 				}
 			};
 
-			memo.insert(fullsimple, Rc::clone(&got));
+			let truegot = match *got
+			{ Literal(wv) =>
+				if let Some(&width) = p.widths.get(&myname) {
+					Literal(wv.as_width(width)).rc()
+				} else {
+					got
+				}
+			, _ => got
+			};
 
-			got // TODO: squash(?) (IMPORTANT:: if you do squash, you need to add builtin widths).
-			// am honestly not a big a fan of (assignment) squashing because I think it only differs
-			// in that one really weird thing where -8 = 8 for 3-bit number. will revisit some time.
+			memo.insert(fullsimple, Rc::clone(&truegot));
+
+			truegot
 		},
 		BinMaths(op, x, y) => {
 			let l = f!(Rc::clone(x));
@@ -1057,6 +1066,19 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 	let mut      widths = HashMap::<String, WireWidth>::new();
 	let mut    outchars = HashSet::<char>::new();
 	let mut      regins = HashSet::<String>::new();
+
+	widths.insert("Stat".to_string(), WireWidth::Bits(3));
+	widths.insert("pc".to_string(), WireWidth::Bits(64));
+	widths.insert("reg_srcA".to_string(), WireWidth::Bits(4));
+	widths.insert("reg_srcB".to_string(), WireWidth::Bits(4));
+	widths.insert("reg_dstE".to_string(), WireWidth::Bits(4));
+	widths.insert("reg_dstM".to_string(), WireWidth::Bits(4));
+	widths.insert("reg_inputE".to_string(), WireWidth::Bits(64));
+	widths.insert("reg_inputM".to_string(), WireWidth::Bits(64));
+	widths.insert("mem_writebit".to_string(), WireWidth::Bits(1));
+	widths.insert("mem_readbit".to_string(), WireWidth::Bits(1));
+	widths.insert("mem_addr".to_string(), WireWidth::Bits(64));
+	widths.insert("mem_input".to_string(), WireWidth::Bits(64));
 
 	// Todo: insert builtin width stuff if squashing 🤔
 
