@@ -951,6 +951,13 @@ pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
 }
 
 pub fn equiv(l: Rc<Simple>, r: Rc<Simple>) -> EquivResult {
+	let is_unk = |x: Rc<Simple>| match &*x
+		{ Simple::Unknown(..) => true
+		, _ => false
+		};
+	if None != find(&is_unk, Rc::clone(&l)) || None != find(&is_unk, Rc::clone(&r)) { // ported from old behaviour; not sure if can determine anything further
+		return EquivResult::Unsimplified
+	}
 	if let Some(x) = equiv_uncomm(Rc::clone(&l), Rc::clone(&r)) {
 		return x
 	} else if let Some(x) = equiv_uncomm(r, l) {
@@ -960,6 +967,7 @@ pub fn equiv(l: Rc<Simple>, r: Rc<Simple>) -> EquivResult {
 	}
 }
 
+// could probably actually take x as reference
 fn find<F>(f: &F, x: Rc<Simple>) -> Option<Rc<Simple>> where F: Fn(Rc<Simple>) -> bool {
 	use self::Simple::*;
 	macro_rules! f {
