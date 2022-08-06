@@ -638,55 +638,9 @@ fn sbin(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Rc<Simple> {
 		}
 	}
 
-	// this code makes me sad
-	if let Cool(name, props) = &*l {
-		for prop in props.iter() {
-			match prop {
-				CoolProperty::OneOf(ns) => {
-					if let Literal(_) = &*r {
-						return OneOfLogic(name.to_string(), ns.iter().map(|n| (*n, sbin(op, Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc(), Rc::clone(&r)))).collect()).rc()
-					}
-				},
-				CoolProperty::Neq(x) => {
-					// there are probably misc other simplifications you could
-					// do with op=something other than Equal or NotEqual but..
-					if let Equal | NotEqual = op {
-						if let Literal(WireValue{bits, ..}) = *sbin(Equal, Rc::clone(x), Rc::clone(&r)) {
-							// bits represents R == (the thing that is not L) <=> whether L is neq R
-							return match op
-							{ Equal => bool2val!(bits == 0)
-							, _     => bool2val!(bits != 0)
-							}
-						}
-					}
-				},
-			}
-		}
-	}
-
-	// I literally copied this from above and changed the orders
-	if let Cool(name, props) = &*r {
-		for prop in props.iter() {
-			match prop {
-				CoolProperty::OneOf(ns) => {
-					if let Literal(_) = &*l {
-						return OneOfLogic(name.to_string(), ns.iter().map(|n| (*n, sbin(op, Rc::clone(&r), Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc()))).collect()).rc()
-					}
-				},
-				CoolProperty::Neq(x) => {
-					// there are probably misc other simplifications you could
-					// do with op=something other than Equal or NotEqual but..
-					if let Equal | NotEqual = op {
-						if let Literal(WireValue{bits, ..}) = *sbin(Equal, Rc::clone(x), Rc::clone(&l)) {
-							// bits represents L == (the thing that is not R) <=> whether R is neq L
-							return match op
-							{ Equal => bool2val!(bits == 0)
-							, _     => bool2val!(bits != 0)
-							}
-						}
-					}
-				},
-			}
+	if let Literal(WireValue{ bits: 0, .. }) = *r { // x - 0
+		if op == Sub {
+			return l
 		}
 	}
 
@@ -695,6 +649,57 @@ fn sbin(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Rc<Simple> {
 	} else if let Some(x) = sbin_commshort(op, Rc::clone(&r), Rc::clone(&l)) {
 		x
 	} else {
+		// this code makes me sad
+		if let Cool(name, props) = &*l {
+			for prop in props.iter() {
+				match prop {
+					CoolProperty::OneOf(ns) => {
+						if let Literal(_) = &*r {
+							return OneOfLogic(name.to_string(), ns.iter().map(|n| (*n, sbin(op, Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc(), Rc::clone(&r)))).collect()).rc()
+						}
+					},
+					CoolProperty::Neq(x) => {
+						// there are probably misc other simplifications you could
+						// do with op=something other than Equal or NotEqual but..
+						if let Equal | NotEqual = op {
+							if let Literal(WireValue{bits, ..}) = *sbin(Equal, Rc::clone(x), Rc::clone(&r)) {
+								// bits represents R == (the thing that is not L) <=> whether L is neq R
+								return match op
+								{ Equal => bool2val!(bits == 0)
+								, _     => bool2val!(bits != 0)
+								}
+							}
+						}
+					},
+				}
+			}
+		}
+
+		// I literally copied this from above and changed the orders
+		if let Cool(name, props) = &*r {
+			for prop in props.iter() {
+				match prop {
+					CoolProperty::OneOf(ns) => {
+						if let Literal(_) = &*l {
+							return OneOfLogic(name.to_string(), ns.iter().map(|n| (*n, sbin(op, Rc::clone(&r), Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc()))).collect()).rc()
+						}
+					},
+					CoolProperty::Neq(x) => {
+						// there are probably misc other simplifications you could
+						// do with op=something other than Equal or NotEqual but..
+						if let Equal | NotEqual = op {
+							if let Literal(WireValue{bits, ..}) = *sbin(Equal, Rc::clone(x), Rc::clone(&l)) {
+								// bits represents L == (the thing that is not R) <=> whether R is neq L
+								return match op
+								{ Equal => bool2val!(bits == 0)
+								, _     => bool2val!(bits != 0)
+								}
+							}
+						}
+					},
+				}
+			}
+		}
 		BinMaths(op, l, r).rc()
 	}
 }
