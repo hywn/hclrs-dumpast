@@ -939,9 +939,18 @@ pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
 		}
 	}
 
-	if let (Slice(x, _, _), y) = lr {
+	if let (Slice(x, _, _), _) = lr {
 		if let Name(_) = &**x {
-			if None == find(&|thing| thing == Rc::clone(x), r) {
+			if None == find(&|thing| thing == Rc::clone(x), Rc::clone(&r)) {
+				return Some(NotEquiv)
+			}
+		}
+	}
+
+	// x <op> y /= x; special cases where this is true like x + 0 == x should have been simplified by sbin already.
+	if let (BinMaths(op, a, b), _) = lr {
+		if let BopCode::Add | BopCode::Sub = op {
+			if equiv(Rc::clone(a), Rc::clone(&r)) == Equiv || equiv(Rc::clone(b), Rc::clone(&r)) == Equiv {
 				return Some(NotEquiv)
 			}
 		}
