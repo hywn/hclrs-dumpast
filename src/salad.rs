@@ -565,7 +565,7 @@ impl Simplifiable for ast::Expr {
 					match &*cond
 					{ Literal(WireValue{bits:0, ..}) => continue
 					, Literal(_) => return f!(value)
-					, _ => return Unknown(self::Unknown::Mux(cond)).rc()
+					, _ => return lanz.fullpath(Unknown(self::Unknown::Mux(cond)).rc())
 					}
 				}
 				Simple::Error("mux did not select branch".to_string()).rc()
@@ -762,7 +762,7 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 		($x: expr) => { s_simplify(p, state, memo, Lanz{age:0}, $x, er) }
 	}
 
-	// should re-simplify anything that *could* have expanded.
+	// should re-simplify anything that *could* have expanded/previously could not be simplified and now can be.
 
 	let fullsimple = lanz.fullpath(Rc::clone(&simple));
 
@@ -781,7 +781,7 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 				if (*l + *lo) > *h || (*l + *hi) > *h {
 					panic!("slice of slice out of bounds")
 				} else {
-					Slice(Rc::clone(x), *l + *lo, *l + *hi).rc()
+					root!(Slice(Rc::clone(x), *l + *lo, *l + *hi).rc())
 				}
 			, other =>
 				{
