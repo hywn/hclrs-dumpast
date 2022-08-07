@@ -255,6 +255,7 @@ pub enum EquivResult
 	, Ambiguous    // old "WrongMaybe" -- essentially "I don't know"
 	, NotEquiv     // old "NotEquiv"
 	, Unsimplified // old "Unknown"    -- essentially Ambiguous but specifically because something didn't simplify
+	, FailedMatch  // potentially relies on a failed match so this condition is void.
 	}
 
 impl EquivResult {
@@ -263,20 +264,22 @@ impl EquivResult {
 		match self
 		{ Equiv        => true
 		, Ambiguous    => x != Equiv
-		, NotEquiv     => x == NotEquiv || x == Unsimplified
-		, Unsimplified => x == Unsimplified
+		, NotEquiv     => x == NotEquiv || x == Unsimplified || x == FailedMatch
+		, Unsimplified => x == Unsimplified || x == FailedMatch
+		, FailedMatch  => x == FailedMatch
 		}
 	}
 	fn cmax(self, x: EquivResult) -> EquivResult {
 		if self.ce(x) { self } else { x }
 	}
-	fn ke(self, x: EquivResult) -> bool { // sorting Equiv > NotEquiv > Ambiguous > Unsimplified
+	fn ke(self, x: EquivResult) -> bool { // sorting Equiv > NotEquiv > Ambiguous > Unsimplified > FailedMatch
 		use self::EquivResult::*;
 		match self
 		{ Equiv        => true
 		, NotEquiv     => x != Equiv
-		, Ambiguous    => x == Ambiguous || x == Unsimplified
-		, Unsimplified => x == Unsimplified
+		, Ambiguous    => x == Ambiguous || x == Unsimplified || x == FailedMatch
+		, Unsimplified => x == Unsimplified || x == FailedMatch
+		, FailedMatch  => x == FailedMatch
 		}
 	}
 }
@@ -979,6 +982,13 @@ pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
 }
 
 pub fn equiv(l: Rc<Simple>, r: Rc<Simple>) -> EquivResult {
+	let is_failedmatch = |x: Rc<Simple>| match &*x
+		{ Simple::Unreplaced(..) => true
+		, _ => false
+		};
+	if None != find(&is_failedmatch, Rc::clone(&l)) || None != find(&is_failedmatch, Rc::clone(&r)) { // ported from old behaviour; not sure if can determine anything further
+		return EquivResult::FailedMatch
+	}
 	if *l == Simple::Wildcard || *r == Simple::Wildcard {
 		return EquivResult::Equiv
 	}
@@ -1165,7 +1175,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 				e.transf1(&|x| x.givens.push((Rc::clone(&l), Rc::clone(&r))));
 			},
 			Condition(a, b) => {
-				let mut max = EquivResult::Unsimplified; // max correctness of any current env
+				let mut max = EquivResult::FailedMatch; // max correctness of any current env
 				// add condition to each current env
 				e.transf1_accum(&mut |x, gs, ms| {
 					// givens can vary across threads (because of matching) so cannot have global memo.
@@ -1175,23 +1185,39 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 					let matchmap = HashMap::<Unreplaced, Rc<Simple>>::from_iter(ms);
 					// givens can depend on values, matches
 					let state = EvalState { givens: HashMap::from_iter(gs.into_iter().map(|(x, y)| (unreplacement_replacement(&matchmap, x), unreplacement_replacement(&matchmap, y)) )) };
-					let l = Rc::clone(&a);
-					let r = Rc::clone(&b);
-					let ll = unreplacement_replacement(&matchmap, Rc::clone(&l));
-					let rr = unreplacement_replacement(&matchmap, Rc::clone(&r));
-					let simpl = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&ll), true);
-					let simpr = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&rr), true);
-					let res = equiv(Rc::clone(&simpl), Rc::clone(&simpr));
 
-					max = if max.ce(res) { max } else { res };
-
-					let got = TestResult::Condition // 🙂
-						{ res
-						, gotstr: prune(vec![Rc::clone(&l), Rc::clone(&ll), simpl].iter()).iter().map(|x| x.to_string()). reduce(|x, y| format!("{} -> {}", x, y)).unwrap()
-						, expectedstr: prune(vec![l, ll, r, rr, simpr].iter()).iter().map(|x| x.to_string()). reduce(|x, y| format!("{} -> {}", x, y)).unwrap()
+					// pretty terrible afterthought code
+					let is_failedmatch = |x: Rc<Simple>| match &*x
+						{ Simple::Unreplaced(..) => true
+						, _ => false
 						};
+					let failedmatch = state.givens.iter()
+						.any(|(k, v)| None != find(&is_failedmatch, Rc::clone(&k)) || None != find(&is_failedmatch, Rc::clone(&v)));
+					if failedmatch {
+						x.results.push(Rc::new(TestResult::Condition
+							{ res: EquivResult::FailedMatch
+							, gotstr: "N/A".to_string()
+							, expectedstr: "N/A".to_string()
+							}))
+					} else {
+						let l = Rc::clone(&a);
+						let r = Rc::clone(&b);
+						let ll = unreplacement_replacement(&matchmap, Rc::clone(&l));
+						let rr = unreplacement_replacement(&matchmap, Rc::clone(&r));
+						let simpl = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&ll), true);
+						let simpr = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&rr), true);
+						let res = equiv(Rc::clone(&simpl), Rc::clone(&simpr));
 
-					x.results.push(Rc::new(got))
+						max = if max.ce(res) { max } else { res };
+
+						let got = TestResult::Condition // 🙂
+							{ res
+							, gotstr: prune(vec![Rc::clone(&l), Rc::clone(&ll), simpl].iter()).iter().map(|x| x.to_string()). reduce(|x, y| format!("{} -> {}", x, y)).unwrap()
+							, expectedstr: prune(vec![l, ll, r, rr, simpr].iter()).iter().map(|x| x.to_string()). reduce(|x, y| format!("{} -> {}", x, y)).unwrap()
+							};
+
+						x.results.push(Rc::new(got))
+					}
 				}, &vec!(), &vec!());
 				// prune envs
 				e.pruneleaf(&|x|
