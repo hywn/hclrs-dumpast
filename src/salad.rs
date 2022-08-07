@@ -263,16 +263,16 @@ impl EquivResult {
 		use self::EquivResult::*;
 		match self
 		{ Equiv        => true
-		, Ambiguous    => x != Equiv
-		, NotEquiv     => x == NotEquiv || x == Unsimplified || x == FailedMatch
-		, Unsimplified => x == Unsimplified || x == FailedMatch
-		, FailedMatch  => x == FailedMatch
+		, FailedMatch  => x != Equiv
+		, Unsimplified => x == Unsimplified || x == Ambiguous || x == NotEquiv
+		, Ambiguous    => x == Ambiguous || x == NotEquiv
+		, NotEquiv     => x == NotEquiv
 		}
 	}
 	fn cmax(self, x: EquivResult) -> EquivResult {
 		if self.ce(x) { self } else { x }
 	}
-	fn ke(self, x: EquivResult) -> bool { // sorting Equiv > NotEquiv > Ambiguous > Unsimplified > FailedMatch
+	fn ke(self, x: EquivResult) -> bool { // sorting Equiv > NotEquiv > Ambiguous > Unsimplified > FailedMatch; 'most known'
 		use self::EquivResult::*;
 		match self
 		{ Equiv        => true
@@ -1199,7 +1199,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 				e.transf1(&|x| x.givens.push((Rc::clone(&l), Rc::clone(&r))));
 			},
 			Condition(a, b) => {
-				let mut max = EquivResult::FailedMatch; // max correctness of any current env
+				let mut max = EquivResult::NotEquiv; // max correctness of any current env
 				// add condition to each current env
 				e.transf1_accum(&mut |x, gs, ms| {
 					// givens can vary across threads (because of matching) so cannot have global memo.
@@ -1218,11 +1218,13 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 					let failedmatch = state.givens.iter()
 						.any(|(k, v)| None != find(&is_failedmatch, Rc::clone(&k)) || None != find(&is_failedmatch, Rc::clone(&v)));
 					if failedmatch {
+						let res = EquivResult::FailedMatch;
 						x.results.push(Rc::new(TestResult::Condition
-							{ res: EquivResult::FailedMatch
+							{ res
 							, gotstr: "N/A".to_string()
 							, expectedstr: "N/A".to_string()
-							}))
+							}));
+						max = if max.ce(res) { max } else { res };
 					} else {
 						let l = Rc::clone(&a);
 						let r = Rc::clone(&b);
