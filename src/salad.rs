@@ -942,6 +942,25 @@ pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
 		}
 	}
 
+	// x <op> y /= x; special cases where this is true like x + 0 == x should have been simplified by sbin already.
+	if let (BinMaths(op, a, b), _) = lr {
+		if let BopCode::Add | BopCode::Sub = op {
+			if equiv(Rc::clone(a), Rc::clone(&r)) == Equiv || equiv(Rc::clone(b), Rc::clone(&r)) == Equiv {
+				return Some(NotEquiv)
+			}
+		}
+	}
+
+
+	// placed specifically after 'container' equivs and before 'find-in-other-side' equivs
+	let is_unk = |x: Rc<Simple>| match &*x
+		{ Simple::Unknown(..) => true
+		, _ => false
+		};
+	if None != find(&is_unk, Rc::clone(&l)) || None != find(&is_unk, Rc::clone(&r)) { // ported from old behaviour; not sure if can determine anything further
+		return Some(EquivResult::Unsimplified)
+	}
+
 	if let Name(_) = *l {
 		if None == find(&|thing| thing == l, Rc::clone(&r)) {
 			return Some(NotEquiv)
@@ -956,25 +975,12 @@ pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
 		}
 	}
 
-	// x <op> y /= x; special cases where this is true like x + 0 == x should have been simplified by sbin already.
-	if let (BinMaths(op, a, b), _) = lr {
-		if let BopCode::Add | BopCode::Sub = op {
-			if equiv(Rc::clone(a), Rc::clone(&r)) == Equiv || equiv(Rc::clone(b), Rc::clone(&r)) == Equiv {
-				return Some(NotEquiv)
-			}
-		}
-	}
-
 	None
 }
 
 pub fn equiv(l: Rc<Simple>, r: Rc<Simple>) -> EquivResult {
-	let is_unk = |x: Rc<Simple>| match &*x
-		{ Simple::Unknown(..) => true
-		, _ => false
-		};
-	if None != find(&is_unk, Rc::clone(&l)) || None != find(&is_unk, Rc::clone(&r)) { // ported from old behaviour; not sure if can determine anything further
-		return EquivResult::Unsimplified
+	if *l == Simple::Wildcard || *r == Simple::Wildcard {
+		return EquivResult::Equiv
 	}
 	if let Some(x) = equiv_uncomm(Rc::clone(&l), Rc::clone(&r)) {
 		return x
@@ -1018,7 +1024,7 @@ fn prune<T: DoubleEndedIterator>(xs: T) -> Vec<T::Item> where T::Item: Eq {
 }
 
 // very incomplete implemention with the cases that I need hard-coded in.
-fn generate_matches(p: &Program, l: Rc<Simple>, r: Rc<Simple>) -> Vec<Vec<(Unreplaced, Rc<Simple>)>> {
+fn generate_matches(p: &Program, state: &EvalState, memo: &mut Memo, l: Rc<Simple>, r: Rc<Simple>) -> Vec<Vec<(Unreplaced, Rc<Simple>)>> {
 	use self::Simple::*;
 	use self::Unreplaced::*;
 	// for pc
@@ -1026,6 +1032,18 @@ fn generate_matches(p: &Program, l: Rc<Simple>, r: Rc<Simple>) -> Vec<Vec<(Unrep
 		if let Some((_, inname, _)) = p.regouts.get(x) {
 			return vec![vec![(RegOut(name.to_string()), r), (RegIn(name.to_string()), Name(inname.to_string()).rc())]]
 		}
+	}
+	if let Unreplaced(RegIn(name)) = &*l {
+		let xs : Vec<Vec<(self::Unreplaced, Rc<Simple>)>> = p.regouts.iter()
+			.filter_map(|(outname, (_, inname, _))| {
+				let myin = Name(inname.clone()).rc();
+				if EquivResult::Equiv == equiv(Rc::clone(&r), s_simplify(p, state, memo, Lanz{age:0}, Rc::clone(&myin), false)) {
+					Some(vec![(RegIn(name.clone()), myin), (RegOut(name.clone()), Name(outname.clone()).rc())])
+				} else {
+					None
+				}
+			}).collect();
+		return if xs.is_empty() { vec![vec![]] } else { xs }
 	}
 	return vec![vec![]]
 }
@@ -1214,7 +1232,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 							let simpl = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&l), false);
 							let simpr = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&r), false);
 
-							generate_matches(&program, simpl, simpr)
+							generate_matches(&program, &state, &mut memo, simpl, simpr)
 						},
 					};
 					x.bs = x.bs.iter().flat_map(|b|
