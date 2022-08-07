@@ -833,7 +833,8 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 				if !er { // do-not-simplify-regouts option
 					Rc::clone(&fullsimple)
 				} else if state.givens.iter().all(|(k, v)| lanz.age >= whatage(k) && lanz.age >= whatage(v)) {
-					simp!(defval) // reached edge of age
+					//simp!(defval) // reached edge of age -- reg defaults
+					Rc::clone(&fullsimple) // reached edge of age -- no reg defaults
 				} else {
 					let bubble = lastname!(format!("bubble_{}", c));
 					match *bubble {
