@@ -622,6 +622,24 @@ fn sbin_commshort(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Option<Rc<Simple
 		}
 	}
 
+	// (Y - X) + X = Y
+	if op == Add {
+		if let BinMaths(Sub, a, b) = &*l {
+			if EquivResult::Equiv == equiv(Rc::clone(b), Rc::clone(&r)) {
+				return Some(Rc::clone(a))
+			}
+		}
+		if let BinMaths(Add, a, b) = &*l { // (Y + (-X)) + X = Y
+			let negx = UnMaths(UopCode::Negate, Rc::clone(&r)).rc();
+			if EquivResult::Equiv == equiv(Rc::clone(b), Rc::clone(&negx)) {
+				return Some(Rc::clone(a))
+			}
+			if EquivResult::Equiv == equiv(Rc::clone(a), negx) {
+				return Some(Rc::clone(b))
+			}
+		}
+	}
+
 	None
 }
 
@@ -954,6 +972,11 @@ pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
 		}
 	}
 
+	if let (UnMaths(opx, x), UnMaths(opy, y)) = lr {
+		if opx == opy {
+			return Some(equiv(Rc::clone(x), Rc::clone(y)))
+		}
+	}
 
 	// placed specifically after 'container' equivs and before 'find-in-other-side' equivs
 	let is_unk = |x: Rc<Simple>| match &*x
