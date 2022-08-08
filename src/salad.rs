@@ -1269,20 +1269,23 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 					})
 				}
 				// split current (local) env on the different paths
-				e.transf2_accum(&mut |x, gs, _ms|{
+				e.transf2_accum(&mut |x, gs, ms|{
 					let mss : Vec<Vec<(Unreplaced, Rc<Simple>)>> = match &m {
 						MatchType::Regread(a, b) => ab!(Src, Output, a.clone(), b.clone(), "reg_srcA", "reg_srcB", "reg_outputA", "reg_outputB"),
 						MatchType::Regwrite(a, b) => ab!(Dst, Input, a.clone(), b.clone(), "reg_dstE", "reg_dstM", "reg_inputE", "reg_inputM"),
 						MatchType::Any(l, r) => {
 							// a complete version would probably
 							//    perform match replacement on these givens as well
-							//    + l and r??
+							let matchmap = HashMap::<Unreplaced, Rc<Simple>>::from_iter(ms);
 							let mut memo = HashMap::<Rc<Simple>, Rc<Simple>>::new();
 							// givens can depend on values, matches
 							let state = EvalState { givens: HashMap::from_iter(gs) };
 
-							let simpl = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&l), false);
-							let simpr = s_simplify(&program, &state, &mut memo, Lanz{age:0}, Rc::clone(&r), false);
+							let ll = unreplacement_replacement(&matchmap, Rc::clone(l));
+							let rr = unreplacement_replacement(&matchmap, Rc::clone(r));
+
+							let simpl = s_simplify(&program, &state, &mut memo, Lanz{age:0}, ll, false);
+							let simpr = s_simplify(&program, &state, &mut memo, Lanz{age:0}, rr, false);
 
 							generate_matches(&program, &state, &mut memo, simpl, simpr)
 						},
