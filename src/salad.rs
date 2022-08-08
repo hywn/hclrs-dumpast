@@ -640,6 +640,18 @@ fn sbin_commshort(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Option<Rc<Simple
 		}
 	}
 
+	// (A + B) - B = A; (A + B) - A = B
+	if op == Sub {
+		if let BinMaths(Add, a, b) = &*l {
+			if EquivResult::Equiv == equiv(Rc::clone(b), Rc::clone(&r)) {
+				return Some(Rc::clone(a))
+			}
+			if EquivResult::Equiv == equiv(Rc::clone(a), Rc::clone(&r)) {
+				return Some(Rc::clone(b))
+			}
+		}
+	}
+
 	None
 }
 
@@ -979,6 +991,12 @@ pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
 		if opx == opy {
 			return Some(equiv(Rc::clone(x), Rc::clone(y)))
 		}
+	}
+
+	// X - Y = X + (-Y)
+	if let (BinMaths(BopCode::Sub, x, y), BinMaths(BopCode::Add, ..)) = lr {
+		// essentially normalises all A - B <=> A + (-B)?
+		return Some(equiv(BinMaths(BopCode::Add, Rc::clone(x), sun(UopCode::Negate, Rc::clone(y))).rc(), Rc::clone(&r)))
 	}
 
 	// placed specifically after 'container' equivs and before 'find-in-other-side' equivs
