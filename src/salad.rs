@@ -676,7 +676,8 @@ fn sbin(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Rc<Simple> {
 				match prop {
 					CoolProperty::OneOf(ns) => {
 						if let Literal(_) = &*r {
-							return OneOfLogic(name.to_string(), ns.iter().map(|n| (*n, sbin(op, Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc(), Rc::clone(&r)))).collect()).rc()
+							// need to simplify immediately, e.g. != all
+							return ool_simplify(OneOfLogic(name.to_string(), ns.iter().map(|n| (*n, sbin(op, Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc(), Rc::clone(&r)))).collect()).rc())
 						}
 					},
 					CoolProperty::Neq(x) => {
@@ -702,7 +703,8 @@ fn sbin(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Rc<Simple> {
 				match prop {
 					CoolProperty::OneOf(ns) => {
 						if let Literal(_) = &*l {
-							return OneOfLogic(name.to_string(), ns.iter().map(|n| (*n, sbin(op, Rc::clone(&r), Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc()))).collect()).rc()
+							// need to simplify immediately, e.g. != all
+							return ool_simplify(OneOfLogic(name.to_string(), ns.iter().map(|n| (*n, sbin(op, Rc::clone(&r), Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc()))).collect()).rc())
 						}
 					},
 					CoolProperty::Neq(x) => {
