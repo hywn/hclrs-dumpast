@@ -999,6 +999,10 @@ pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
 		return Some(equiv(BinMaths(BopCode::Add, Rc::clone(x), sun(UopCode::Negate, Rc::clone(y))).rc(), Rc::clone(&r)))
 	}
 
+	if let (Aged(x), Aged(y)) = lr {
+		return Some(equiv(Rc::clone(x), Rc::clone(y)))
+	}
+
 	// placed specifically after 'container' equivs and before 'find-in-other-side' equivs
 	let is_unk = |x: Rc<Simple>| match &*x
 		{ Simple::Unknown(..) => true
