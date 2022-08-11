@@ -568,7 +568,7 @@ impl Simplifiable for ast::Expr {
 					match &*cond
 					{ Literal(WireValue{bits:0, ..}) => continue
 					, Literal(_) => return f!(value)
-					, _ => return lanz.fullpath(Unknown(self::Unknown::Mux(cond)).rc())
+					, _ => return Unknown(self::Unknown::Mux(cond)).rc()
 					}
 				}
 				Simple::Error("mux did not select branch".to_string()).rc()
@@ -858,11 +858,11 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 							match *stall {
 								Literal(WireValue{ bits: 0, ..}) => lastname!(inname.to_string()), // not bubbled or stalled
 								Literal(_) => last!(simple), // stalled
-								_ => lanz.fullpath(Unknown(self::Unknown::StalledRegOut(simple, stall)).rc()),
+								_ => Unknown(self::Unknown::StalledRegOut(Rc::clone(&fullsimple), stall)).rc(),
 							}
 						},
 						Literal(_) => simp!(defval), // bubbled
-						_ => lanz.fullpath(Unknown(self::Unknown::BubbledRegOut(simple, bubble)).rc()),
+						_ => Unknown(self::Unknown::BubbledRegOut(Rc::clone(&fullsimple), bubble)).rc(),
 					}
 				}
 			} else {
