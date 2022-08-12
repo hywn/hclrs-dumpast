@@ -693,15 +693,15 @@ fn sbin(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Rc<Simple> {
 						}
 					},
 					CoolProperty::Neq(x) => {
-						// there are probably misc other simplifications you could
-						// do with op=something other than Equal or NotEqual but..
-						if let Equal | NotEqual = op {
-							if let Literal(WireValue{bits, ..}) = *sbin(Equal, Rc::clone(x), Rc::clone(&r)) {
-								// bits represents R == (the thing that is not L) <=> whether L is neq R
-								return match op
-								{ Equal => bool2val!(bits == 0)
-								, _     => bool2val!(bits != 0)
-								}
+						// can only say that a == is false or a != is true
+						if let NotEqual = op {
+							if let EquivResult::Equiv = equiv(Rc::clone(x), Rc::clone(&r)) {
+								return bool2val!(true)
+							}
+						}
+						if let Equal = op {
+							if let EquivResult::Equiv = equiv(Rc::clone(x), Rc::clone(&r)) {
+								return bool2val!(false)
 							}
 						}
 					},
@@ -720,15 +720,15 @@ fn sbin(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Rc<Simple> {
 						}
 					},
 					CoolProperty::Neq(x) => {
-						// there are probably misc other simplifications you could
-						// do with op=something other than Equal or NotEqual but..
-						if let Equal | NotEqual = op {
-							if let Literal(WireValue{bits, ..}) = *sbin(Equal, Rc::clone(x), Rc::clone(&l)) {
-								// bits represents L == (the thing that is not R) <=> whether R is neq L
-								return match op
-								{ Equal => bool2val!(bits == 0)
-								, _     => bool2val!(bits != 0)
-								}
+						// can only say that a == is false or a != is true
+						if let NotEqual = op {
+							if let EquivResult::Equiv = equiv(Rc::clone(x), Rc::clone(&l)) {
+								return bool2val!(true)
+							}
+						}
+						if let Equal = op {
+							if let EquivResult::Equiv = equiv(Rc::clone(x), Rc::clone(&l)) {
+								return bool2val!(false)
 							}
 						}
 					},
