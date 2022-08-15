@@ -207,11 +207,11 @@ pub enum Unknown
 
 #[derive(Debug, Eq, PartialEq, Hash)]
 pub enum Simple
-	{ Literal(WireValue)                  // literalesque
-	, Cool(String, Rc<Vec<CoolProperty>>) // "
-	, Wildcard                            // "
+	{ Literal(WireValue)                      // literalesque
+	, Cool(Rc<Simple>, Rc<Vec<CoolProperty>>) // " the first thing is like an ID. should be either a Builtin or Slice.
+	, Wildcard                                // "
 	, Name(String)
-	, OneOfLogic(String, Vec<(u128, Rc<Simple>)>)
+	, OneOfLogic(Rc<Simple>, Vec<(u128, Rc<Simple>)>)
 	, Unreplaced(Unreplaced)
 	, Error(String)
 	, BinMaths(BopCode, Rc<Simple>, Rc<Simple>) // these act like containers for other Simples
@@ -340,6 +340,42 @@ fn disp_aged(n: u32, x: &Simple) -> (u32, &Simple) {
 	}
 }
 
+// find length, end of longest unknown path
+fn count_uk(start: &Simple) -> (u32, &Simple) {
+	use self::Simple::*;
+	use self::Unknown::*;
+	let res = match start
+		{ BinMaths(_, l, r) =>
+			{
+				let a@(alen, _) = count_uk(l);
+				let b@(blen, _) = count_uk(r);
+				if blen > alen { // note: returns max, so if max is 0, both are 0
+					b
+				} else {
+					a
+				}
+			}
+		, UnMaths(_, x) => count_uk(x)
+		, Slice(x, ..) => count_uk(x)
+		, Aged(x) => count_uk(x) // should actually be flattened so I don't *think* this will be useful? (?)
+		, Unknown(x) => match x
+			{ BubbledRegOut(_, x)
+			| StalledRegOut(_, x)
+			| Mux(x)
+			| InSet(x) =>
+				{
+					let (n, fin) = count_uk(x);
+					(n+1, fin)
+				}
+			}
+		, _ => (0, start)
+		};
+	match res
+	{ (0, _) => (0, start)
+	, x => x
+	}
+}
+
 impl fmt::Display for Unreplaced {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		use self::Unreplaced::*;
@@ -355,10 +391,31 @@ impl fmt::Display for Unreplaced {
 	}
 }
 
+impl Unknown {
+	// not sure if b=there is better way with formatter or something
+	fn head(&self) -> String {
+		use self::Unknown::*;
+		match self
+		{ BubbledRegOut(x, _) => format!("Bubbled {}", x)
+		, StalledRegOut(x, _) => format!("Stalled {}", x)
+		, Mux(_) => "Unsimplified Mux".to_string()
+		, InSet(_) => "Unsimplified InSet".to_string()
+		}
+	}
+	fn reason(&self) -> String {
+		use self::Unknown::*;
+		match self
+		{ BubbledRegOut(_, x)
+		| StalledRegOut(_, x)
+		| Mux(x)
+		| InSet(x) => x.to_string()
+		}
+	}
+}
+
 impl fmt::Display for Simple {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		use self::Simple::*;
-		use self::Unknown::*;
 		match self
 			{ Literal(WireValue{bits, width}) => match width
 				{ WireWidth::Bits(w)   => write!(f, "({}):{}", w, bits)
@@ -378,11 +435,10 @@ impl fmt::Display for Simple {
 			, Aged(x) => match disp_aged(1, x)
 				{ (n, x) => write!(f, "[{} {}]", n, x)
 				}
-			, Simple::Unknown(x) => match x
-				{ BubbledRegOut(x, y) => write!(f, "Unknown bubbled {} because {}", x, y)
-				, StalledRegOut(x, y) => write!(f, "Unknown stalled {} because {}", x, y)
-				, Mux(x)   => write!(f, "Unknown mux because {}", x)
-				, InSet(x) => write!(f, "Unknown inset because {}", x)
+			, Simple::Unknown(start) => match count_uk(self)
+				{ (0, _) => panic!("program logic error while displaying unknowns")
+				, (1, _) => write!(f, "«{} caused by {}»", start.head(), start.reason())
+				, (n@2.., end) => write!(f, "«{} caused by ({} omitted unknowns) caused by {}»", start.head(), n-1, end)
 				}
 			}
 	}
@@ -460,7 +516,7 @@ pub fn ageflat(root: Rc<Simple>) -> Rc<Simple> {
 				, InSet(x) => InSet(distr!(x))
 				} ).rc()
 			, Literal(_) => Rc::clone(x)
-			, Cool(..)   => Rc::clone(x)
+			, Cool(..)   => Rc::clone(x) // (Cool does contain Neq but they are all absolutely-aged)
 			, Simple::Wildcard   => Rc::clone(x)
 			, _ => root
 			}
@@ -603,8 +659,8 @@ fn sbin_commshort(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Option<Rc<Simple
 
 	// this can technically go in sbin to avoid checking twice
 	// but I don't want to write out the full default failed-value thing
-	if let (OneOfLogic(xname, xs), OneOfLogic(yname, ys)) = lr {
-		if xname != yname { // cannot compare different values' OneOfLogics
+	if let (OneOfLogic(xid, xs), OneOfLogic(yid, ys)) = lr {
+		if xid != yid { // cannot compare different values' OneOfLogics
 			return None
 		}
 		// == LOGIC WARNING ==
@@ -616,7 +672,7 @@ fn sbin_commshort(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Option<Rc<Simple
 		// as long as the test-writer writes tests well
 		// this should not happen.
 		if let Or | Xor | And | Equal | NotEqual | LogicalAnd | LogicalOr = op {
-			return Some(ool_simplify(OneOfLogic(xname.to_string(), xs.iter().zip(ys.iter()).map(|((n, x), (_, y))| (*n, sbin(op, Rc::clone(x), Rc::clone(y)))).collect()).rc()))
+			return Some(ool_simplify(OneOfLogic(Rc::clone(xid), xs.iter().zip(ys.iter()).map(|((n, x), (_, y))| (*n, sbin(op, Rc::clone(x), Rc::clone(y)))).collect()).rc()))
 		} else {
 			return None
 		}
@@ -683,13 +739,13 @@ fn sbin(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Rc<Simple> {
 		x
 	} else {
 		// this code makes me sad
-		if let Cool(name, props) = &*l {
+		if let Cool(id, props) = &*l {
 			for prop in props.iter() {
 				match prop {
 					CoolProperty::OneOf(ns) => {
 						if let Literal(_) = &*r {
 							// need to simplify immediately, e.g. != all
-							return ool_simplify(OneOfLogic(name.to_string(), ns.iter().map(|n| (*n, sbin(op, Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc(), Rc::clone(&r)))).collect()).rc())
+							return ool_simplify(OneOfLogic(Rc::clone(id), ns.iter().map(|n| (*n, sbin(op, Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc(), Rc::clone(&r)))).collect()).rc())
 						}
 					},
 					CoolProperty::Neq(x) => {
@@ -710,13 +766,13 @@ fn sbin(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Rc<Simple> {
 		}
 
 		// I literally copied this from above and changed the orders
-		if let Cool(name, props) = &*r {
+		if let Cool(id, props) = &*r {
 			for prop in props.iter() {
 				match prop {
 					CoolProperty::OneOf(ns) => {
 						if let Literal(_) = &*l {
 							// need to simplify immediately, e.g. != all
-							return ool_simplify(OneOfLogic(name.to_string(), ns.iter().map(|n| (*n, sbin(op, Rc::clone(&r), Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc()))).collect()).rc())
+							return ool_simplify(OneOfLogic(Rc::clone(id), ns.iter().map(|n| (*n, sbin(op, Rc::clone(&r), Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc()))).collect()).rc())
 						}
 					},
 					CoolProperty::Neq(x) => {
@@ -818,6 +874,13 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 				} else {
 					root!(Slice(Rc::clone(x), *l + *lo, *l + *hi).rc())
 				}
+			, Cool(id, props) => Cool
+				( Slice(Rc::clone(id), *lo, *hi).rc()
+				, Rc::new(props.iter().map(|x| match x
+					{ CoolProperty::OneOf(xs) => CoolProperty::OneOf(xs.iter().map(|val| rawslice(*val, *lo, *hi)).collect())
+					, CoolProperty::Neq(x) => CoolProperty::Neq(root!(Slice(Rc::clone(x), *lo, *hi).rc()))
+					}).collect())
+				).rc()
 			, other =>
 				{
 					let possible = state.givens.iter().filter_map(|(k, v)|{
@@ -1128,7 +1191,7 @@ pub fn unreplacement_replacement(map: &HashMap<Unreplaced, Rc<Simple>>, x: Rc<Si
 	, UnMaths(op, x) => UnMaths(*op, f!(Rc::clone(x))).rc()
 	, Slice(x, lo, hi) => Slice(f!(Rc::clone(x)), *lo, *hi).rc()
 	, Aged(x) => Aged(f!(Rc::clone(x))).rc()
-	, Cool(n, xs) => Cool(n.to_string(), Rc::new(xs.iter().map(|prop| match prop
+	, Cool(n, xs) => Cool(Rc::clone(n), Rc::new(xs.iter().map(|prop| match prop
 			{ OneOf(xs) => OneOf(xs.clone())
 			, Neq(x) => Neq(f!(Rc::clone(x)))
 			}).collect::<Vec<CoolProperty>>())).rc()
@@ -1329,7 +1392,7 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 			Value(name, props) => {
 				let ps = Rc::new(props);
 				e.transf1_accum(&mut |x, _, rs|{
-					let ok = unreplacement_replacement(&HashMap::from_iter(rs.into_iter()), Simple::Cool(name.clone(), Rc::clone(&ps)).rc());
+					let ok = unreplacement_replacement(&HashMap::from_iter(rs.into_iter()), Simple::Cool(Simple::Name(name.clone()).rc(), Rc::clone(&ps)).rc());
 					x.replacements.push((Unreplaced::Value(name.clone()), ok))
 				}, &vec!(), &vec!());
 			},
