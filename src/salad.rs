@@ -610,7 +610,6 @@ impl Simplifiable for ast::Expr {
 				root!(BinMaths(BopCode::Concat, xx, yy).rc())
 			},
 			InSet(e_x, e_xs) => {
-				// TODO: cool logic
 				let x = f!(e_x);
 				let xs : Vec<Rc<Simple>> = e_xs.iter().map(|x| f!(x)).collect();
 
@@ -618,7 +617,7 @@ impl Simplifiable for ast::Expr {
 					.fold(bool2val!(false), |a, b| sbin(BopCode::Or, a, b))
 			},
 			Mux(opts) => {
-				// TODO: cool logic
+				// TODO: extra cool logic?
 				for ast::MuxOption{ condition, value } in opts {
 					let cond = f!(condition);
 					match &*cond
@@ -650,7 +649,6 @@ fn sbin_commshort(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Option<Rc<Simple
 		, (LogicalAnd, WireValue{ bits: 0, .. }) => Some(bool2val!(false)) // false && x = false
 		, (LogicalAnd, WireValue{ bits: _, .. }) => Some(r)                //  true && x = x
 		, (Add, WireValue{ bits: 0, .. }) => Some(r) //  x + 0 = x
-		//, (Or, WireValue{ bits: _, .. }) => Some(l) // 1 | x
 		, _ => None
 		}
 	}
@@ -764,7 +762,6 @@ fn sbin(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Rc<Simple> {
 				}
 			}
 		}
-
 		// I literally copied this from above and changed the orders
 		if let Cool(id, props) = &*r {
 			for prop in props.iter() {
@@ -910,7 +907,7 @@ fn s_simplify(p: &Program, state: &EvalState, memo: &mut Memo, lanz: Lanz, simpl
 				if !er { // do-not-simplify-regouts option
 					Rc::clone(&fullsimple)
 				} else if state.givens.iter().all(|(k, v)| lanz.age >= whatage(k) && lanz.age >= whatage(v)) {
-					//simp!(defval) // reached edge of age -- reg defaults
+					// simp!(defval) // reached edge of age -- reg defaults
 					Rc::clone(&fullsimple) // reached edge of age -- no reg defaults
 				} else {
 					let bubble = lastname!(format!("bubble_{}", c));
@@ -1219,8 +1216,6 @@ pub fn test(test: Test, ss: Vec<ast::Statement>) -> Rc<TestResult> {
 	widths.insert("mem_addr".to_string(), WireWidth::Bits(64));
 	widths.insert("mem_input".to_string(), WireWidth::Bits(64));
 
-	// Todo: insert builtin width stuff if squashing 🤔
-
 	use ast::Statement;
 
 	for x in ss.iter() {
@@ -1428,8 +1423,7 @@ impl EvalTree {
 	fn pop(&mut self) -> Vec<EvalTree> { // removes level
 		let mut res = Vec::new();
 		self.transf2(&mut |r| {
-				res.extend(std::mem::replace(&mut r.bs, Vec::new()))
-			//refs.into_iter().map(|r| std::mem::replace(&mut r.bs, Vec::new())).collect()
+			res.extend(std::mem::replace(&mut r.bs, Vec::new()))
 		});
 		res
 	}
