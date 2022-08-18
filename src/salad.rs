@@ -769,7 +769,7 @@ fn sbin(op: BopCode, l: Rc<Simple>, r: Rc<Simple>) -> Rc<Simple> {
 					CoolProperty::OneOf(ns) => {
 						if let Literal(_) = &*l {
 							// need to simplify immediately, e.g. != all
-							return ool_simplify(OneOfLogic(Rc::clone(id), ns.iter().map(|n| (*n, sbin(op, Rc::clone(&r), Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc()))).collect()).rc())
+							return ool_simplify(OneOfLogic(Rc::clone(id), ns.iter().map(|n| (*n, sbin(op, Rc::clone(&l), Literal(WireValue { bits: *n, width: WireWidth::Unlimited }).rc()))).collect()).rc())
 						}
 					},
 					CoolProperty::Neq(x) => {
