@@ -1027,14 +1027,25 @@ pub fn equiv_uncomm(l: Rc<Simple>, r: Rc<Simple>) -> Option<EquivResult> {
 
 	if let (BinMaths(op1, x1, y1), BinMaths(op2, x2, y2)) = lr {
 		if op1 == op2 {
+			let is_binmaths = |x : &Simple| match x
+				{ BinMaths(..) => true
+				, _ => false
+				};
 			let most_unknown_incorrect = |l: EquivResult, r: EquivResult| if l.ke(r) { r } else { l }; // most unknown ; most incorrect of two options
 			let forward = most_unknown_incorrect(equiv(Rc::clone(x1), Rc::clone(x2)), equiv(Rc::clone(y1), Rc::clone(y2)));
-			return Some(if op1.is_comm() {
+			let res = if op1.is_comm() {
 				let backward = most_unknown_incorrect(equiv(Rc::clone(x1), Rc::clone(y2)), equiv(Rc::clone(y1), Rc::clone(x2)));
 				forward.cmax(backward) // most correct of two options
 			} else {
 				forward
-			})
+			};
+			if Equiv == res {
+				return Some(res)
+			}
+			if is_binmaths(x1) || is_binmaths(y1) || is_binmaths(x2) || is_binmaths(y2) {
+				return Some(Ambiguous) // cannot deal with any kind of potential associativity
+			}
+			return Some(res)
 		}
 	}
 
